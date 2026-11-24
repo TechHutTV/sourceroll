@@ -4,7 +4,9 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 omarchy plugin validate "$ROOT/plugin"
 DEST="$HOME/.config/omarchy/plugins/local.source-record"
 if [ -d "$DEST" ]; then
-    cp -a "$DEST" "$DEST.backup-$(date +%Y%m%d-%H%M%S)"
+    BACKUP="$HOME/.local/state/source-record/plugin-backups/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$(dirname "$BACKUP")"
+    cp -a "$DEST" "$BACKUP"
 fi
 mkdir -p "$DEST"
 cp -R "$ROOT/plugin/." "$DEST/"

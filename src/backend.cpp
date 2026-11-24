@@ -180,7 +180,7 @@ QStringList Backend::ffmpegArguments(const QJsonObject &s, const QString &output
         args << "-map" << "1:a:0" << "-af" << meter << "-f" << "null" << "/dev/null";
     }
     // One input feeds both the untouched recording and a small monitoring image.
-    args << "-map" << "0:v:0" << "-an" << "-vf" << "fps=8,scale=640:-2" << "-c:v" << "mjpeg" << "-q:v" << "5" << "-threads" << "2" << "-f" << "image2pipe" << "pipe:1";
+    args << "-map" << "0:v:0" << "-an" << "-vf" << "fps=30,scale=640:-2" << "-c:v" << "mjpeg" << "-q:v" << "5" << "-threads" << "2" << "-f" << "image2pipe" << "pipe:1";
     return args;
 }
 

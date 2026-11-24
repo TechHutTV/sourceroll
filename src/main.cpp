@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("source-record"); app.setApplicationVersion("0.1.0");
+    app.setApplicationName("source-record"); app.setApplicationVersion("0.1.1");
     app.setDesktopFileName("source-record");
     app.setWindowIcon(QIcon::fromTheme("source-record"));
     app.setQuitOnLastWindowClosed(false);

@@ -14,4 +14,11 @@ Verified on the recording computer on 2026-11-24.
 
 Re-run software tests with `bin/test`. To explicitly test a connected camera, first quit the app, then run `python3 tests/hardware_smoke.py --record`. It uses a temporary output directory, restores settings, and verifies shutdown. It does not manipulate OBS.
 
-The monitoring preview is 640 pixels wide at 8 fps. This does not resize or drop frames from the separate native camera output. The meter is visual only; no microphone loopback is enabled.
+The monitoring preview is 640 pixels wide at 30 fps. This does not resize or drop frames from the separate native camera output. The meter is visual only; no microphone loopback is enabled.
+
+## Installed integration
+
+- Installed Arch package source-record 0.1.1-1; desktop entry validates.
+- User plugin local.source-record enabled in the right bar section before the tray. Plugin backups live outside the plugin discovery directory.
+- The installed Wayland app opens successfully with the Canon preview and Shure meter. User confirmed the 30 fps preview is smooth, with a slight delay.
+- Installed recorder command verified using fps=30 for its 640-pixel preview. Recording remains off; preview intentionally left open for the user.

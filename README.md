@@ -4,7 +4,7 @@
 
 A small Omarchy camera recorder. FFmpeg records the camera into its own timestamped MKV file while OBS records the screen independently. Preview, microphone peak meter, elapsed time and file size stay visible in the app. A bar widget provides controls and recording status.
 
-The Canon's native 1920×1080 MJPEG at 30 fps is stream-copied without re-encoding by default. A smaller H.264 option uses CRF 18. Raw YUYV modes also use CRF 18. Audio is 48 kHz PCM when the device provides 48 kHz. Original MJPEG files are large; watch free disk space. The input is opened once and shared with a reduced 8 fps monitoring preview. The preview is not the recorded frame rate.
+The Canon's native 1920×1080 MJPEG at 30 fps is stream-copied without re-encoding by default. A smaller H.264 option uses CRF 18. Raw YUYV modes also use CRF 18. Audio is 48 kHz PCM when the device provides 48 kHz. Original MJPEG files are large; watch free disk space. The input is opened once and shared with a 640-pixel-wide, 30 fps monitoring preview. The preview is not the recorded frame rate.
 
 The local Canon test used about 1.2 GB per minute in Original mode. Choose H.264 for smaller takes.
 

@@ -76,6 +76,7 @@ private slots:
         QVERIFY(args.contains("studio mic;$(false)"));
         QVERIFY(args.contains("pcm_s16le"));
         QCOMPARE(args.count("/dev/video0"), 1);
+        QCOMPARE(args[args.indexOf("-vf") + 1], "fps=30,scale=640:-2");
     }
     void silentRecordingHasNoAudioInput() {
         auto s = settings(); s["audio"] = "none";
