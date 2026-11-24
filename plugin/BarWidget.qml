@@ -17,8 +17,13 @@ BarWidget {
     property bool unavailable: false
     property bool changing: false
     property real livePeak: -90
+    property string previewSource: ""
     function open() { opened = true; refresh() }
     function close() { opened = false }
+    onOpenedChanged: {
+        if (opened) { action("ensure"); refresh() }
+        else { previewSocket.connected = false; previewSource = "" }
+    }
     function refresh() { if (!poll.running) poll.running = true }
     function action(command) {
         if (control.running || changing) return
@@ -27,6 +32,18 @@ BarWidget {
         control.running = true
     }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+    Socket {
+        id: previewSocket
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/source-record.sock"
+        onConnectionStateChanged: {
+            if (connected) { write('{"command":"subscribe-preview"}\n'); flush() }
+            else root.previewSource = ""
+        }
+        parser: SplitParser {
+            splitMarker: "\n"
+            onRead: function(data) { const image = Model.parsePreview(String(data)); if (image !== null) root.previewSource = image }
+        }
+    }
     Socket {
         id: meterSocket
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/source-record.sock"
@@ -39,7 +56,13 @@ BarWidget {
             onRead: function(data) { const peak = Model.parseMeter(String(data)); if (peak !== null) root.livePeak = peak }
         }
     }
-    Timer { interval: 2000; running: true; repeat: true; triggeredOnStart: true; onTriggered: if (root.status.running && !meterSocket.connected) meterSocket.connected = true }
+    Timer {
+        interval: 2000; running: true; repeat: true; triggeredOnStart: true
+        onTriggered: {
+            if (root.status.running && !meterSocket.connected) meterSocket.connected = true
+            if (root.opened && root.status.running && !previewSocket.connected) previewSocket.connected = true
+        }
+    }
     Timer { interval: root.unavailable ? 15000 : root.opened ? 400 : 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
     Process {
         id: poll
@@ -54,6 +77,8 @@ BarWidget {
                     root.status = value; root.unavailable = false
                     if (value.running && !meterSocket.connected) meterSocket.connected = true
                     if (!value.running && meterSocket.connected) meterSocket.connected = false
+                    if (root.opened && value.running && !previewSocket.connected) previewSocket.connected = true
+                    if (!value.running && previewSocket.connected) previewSocket.connected = false
                 }
                 else root.unavailable = true
             }
@@ -93,6 +118,21 @@ BarWidget {
             width: parent.width
             spacing: Style.space(12)
             Text { textFormat: Text.PlainText; text: "Source Record"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: width * 9 / 16
+                color: Commons.Color.background
+                border.width: 1; border.color: Qt.alpha(Commons.Color.foreground, 0.2)
+                radius: Style.cornerRadius; clip: true
+                Image { anchors.fill: parent; anchors.margins: 1; source: root.previewSource; cache: false; fillMode: Image.PreserveAspectFit }
+                Text {
+                    anchors.centerIn: parent; width: parent.width - 24
+                    visible: root.previewSource === ""; textFormat: Text.PlainText
+                    text: root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening")
+                    horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                    color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body
+                }
+            }
             Text {
                 Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
                 text: root.unavailable ? strings.t("unavailable") : root.status.recording ? strings.t("recording").arg(Model.duration(root.status.elapsed)) : strings.t("idle")
@@ -119,7 +159,6 @@ BarWidget {
                 onClicked: root.action(root.status.recording ? "stop" : "start")
             }
             Button { Layout.fillWidth: true; text: strings.t("open"); bordered: true; onClicked: { root.action("open"); root.close() } }
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: strings.t("independent"); wrapMode: Text.Wrap; color: Commons.Color.foreground; opacity: 0.6; font.family: Style.font.family; font.pixelSize: Style.font.body - 2 }
         }
     }
 }

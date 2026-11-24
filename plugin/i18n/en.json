@@ -6,5 +6,6 @@
   "start": "Start camera recording",
   "stop": "Stop and save",
   "open": "Open preview and settings",
-  "independent": "Camera recording only. OBS is controlled separately."
+  "preview.opening": "Opening camera…",
+  "preview.unavailable": "Camera unavailable"
 }

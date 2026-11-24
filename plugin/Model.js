@@ -35,3 +35,13 @@ function parseMeter(text) {
         return Math.max(-90, Math.min(0, value.peakDb))
     } catch (_) { return null }
 }
+
+function parsePreview(text) {
+    if (typeof text !== "string" || text.length > 1000100) return null
+    try {
+        const value = JSON.parse(text)
+        if (value.event !== "preview" || typeof value.jpeg !== "string" || value.jpeg.length > 1000000) return null
+        if (!value.jpeg.startsWith('/9j/') || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.jpeg)) return null
+        return "data:image/jpeg;base64," + value.jpeg
+    } catch (_) { return null }
+}

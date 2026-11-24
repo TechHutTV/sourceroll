@@ -90,13 +90,13 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
     // Fast attack with a short release makes brief speech peaks visible without lagging the input.
     m_meter.setInterval(40);
     connect(&m_meter, &QTimer::timeout, this, [this] {
-        const double peak = qMax(m_pendingPeak, qMax(-90.0, m_peak - 6.0));
+        const double peak = qMax(m_pendingPeak, qMax(-90.0, m_peak - 20.0));
         m_pendingPeak = -90;
         if (peak != m_peak) { m_peak = peak; emit peakChanged(); }
     });
     m_meter.start();
     m_restart.setSingleShot(true); m_restart.setInterval(250);
-    connect(&m_restart, &QTimer::timeout, this, [this] { if (m_visible && !m_recording && m_process.state() == QProcess::NotRunning) launch(false); });
+    connect(&m_restart, &QTimer::timeout, this, [this] { if ((m_visible || m_previewClients > 0) && !m_recording && m_process.state() == QProcess::NotRunning) launch(false); });
     m_watchdog.setInterval(10000);
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
@@ -112,7 +112,7 @@ Backend::~Backend() { m_shuttingDown = true; m_restart.stop(); stopProcess(); }
 
 void Backend::refreshDevices() {
     if (m_recording) return;
-    if (m_visible) stopProcess();
+    if (m_visible || m_previewClients > 0) stopProcess();
     m_cameras.clear(); m_microphones.clear();
     QDir directory("/sys/class/video4linux");
     for (const auto &node : directory.entryList({"video*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
@@ -149,7 +149,7 @@ void Backend::refreshDevices() {
         for (const auto &mic : m_microphones) if (mic.toMap()["label"].toString().contains("Shure", Qt::CaseInsensitive)) m_settings["audio"] = mic.toMap()["id"].toString();
     }
     emit devicesChanged(); emit settingsChanged();
-    if (m_visible) { dismissError(); m_restart.start(); }
+    if (m_visible || m_previewClients > 0) { dismissError(); m_restart.start(); }
 }
 
 QVariantList Backend::modes() const {
@@ -218,7 +218,7 @@ bool Backend::setSetting(const QString &key, const QVariant &value) {
     if (key == "camera") m_settings["mode"] = modes().isEmpty() ? "" : modes().first().toMap()["id"].toString();
     emit settingsChanged();
     const bool saved = saveSettings();
-    if (saved && m_visible) m_restart.start();
+    if (saved && (m_visible || m_previewClients > 0)) m_restart.start();
     return saved;
 }
 
@@ -271,15 +271,25 @@ void Backend::stopProcess() {
 void Backend::stop() {
     if (!m_recording) return;
     stopProcess();
-    if (m_visible && m_error.isEmpty()) m_restart.start();
+    if ((m_visible || m_previewClients > 0) && m_error.isEmpty()) m_restart.start();
 }
 
 void Backend::toggle() { if (m_recording) stop(); else start(); }
 
 void Backend::setWindowVisible(bool visible) {
     m_visible = visible;
-    if (!visible && !m_recording) stopProcess();
-    else if (visible && m_process.state() == QProcess::NotRunning && m_error.isEmpty()) m_restart.start();
+    if (!visible && m_previewClients == 0 && !m_recording) stopProcess();
+    else if ((visible || m_previewClients > 0) && m_process.state() == QProcess::NotRunning && m_error.isEmpty()) m_restart.start();
+}
+
+void Backend::addPreviewClient() {
+    ++m_previewClients;
+    if (!m_recording && m_process.state() == QProcess::NotRunning && m_error.isEmpty()) m_restart.start();
+}
+
+void Backend::removePreviewClient() {
+    m_previewClients = qMax(0, m_previewClients - 1);
+    if (m_previewClients == 0 && !m_visible && !m_recording) stopProcess();
 }
 
 void Backend::openFolder() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings["directory"].toString())); }
@@ -293,10 +303,11 @@ void Backend::consumeVideo() {
         if (begin > 0) m_frames.remove(0, begin);
         const auto end = m_frames.indexOf(QByteArray::fromHex("ffd9"), 2);
         if (end < 0) break;
-        QImage image = QImage::fromData(m_frames.left(end + 2), "JPEG");
+        const auto jpeg = m_frames.left(end + 2);
+        QImage image = QImage::fromData(jpeg, "JPEG");
         m_frames.remove(0, end + 2);
         if (image.isNull()) continue;
-        m_image = image; m_lastFrame.start(); ++m_frameNumber; emit frameReady();
+        m_image = image; m_previewJpeg = jpeg; m_lastFrame.start(); ++m_frameNumber; emit frameReady();
         if (m_state == "starting" || m_state == "preview-starting") {
             m_watchdog.stop(); m_state = m_recording ? "recording" : "preview"; emit statusChanged();
         }
@@ -352,7 +363,7 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     else if (command == "configure") {
         const auto options = request["settings"].toObject();
         for (auto it = options.begin(); it != options.end(); ++it) if (!setSetting(it.key(), it.value().toVariant())) ok = false;
-    } else if (command != "status" && command != "settings" && command != "devices") ok = false;
+    } else if (command != "status" && command != "settings" && command != "devices" && command != "ensure") ok = false;
     QJsonObject result = QJsonObject::fromVariantMap(status());
     result["ok"] = ok;
     if (command == "settings" || command == "configure") result["settings"] = m_settings;

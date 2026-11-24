@@ -2,6 +2,8 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QSaveFile>
+#include <QBuffer>
+#include <QQmlComponent>
 #include <QJsonDocument>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -114,6 +116,18 @@ private slots:
         QVERIFY(spy.count() > 0);
         write(dir.filePath("theme/shell.toml"), "[font]\nbase-size = 16\n");
         QTRY_COMPARE(theme.style()["fontSize"].toDouble(), 16.0);
+    }
+    void sharedPreviewDataCanRenderWithoutAnotherCamera() {
+        QImage image(64, 36, QImage::Format_RGB32); image.fill(QColor("#e68e0d"));
+        QByteArray jpeg; QBuffer buffer(&jpeg); QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(image.save(&buffer, "JPEG"));
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("cameraFrame", "data:image/jpeg;base64," + QString::fromLatin1(jpeg.toBase64()));
+        QQmlComponent component(&engine);
+        component.setData("import QtQuick\nImage { source: cameraFrame; cache: false }", QUrl());
+        QScopedPointer<QObject> output(component.create()); QVERIFY2(output, qPrintable(component.errorString()));
+        QTRY_COMPARE(output->property("status").toInt(), 1);
+        QCOMPARE(output->property("implicitWidth").toInt(), 64);
     }
     void rawAndCompressedModesEncodeCorrectly() {
         auto s = settings(); s["mode"] = "1920x1080@30/1:yuyv422";

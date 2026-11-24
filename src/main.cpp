@@ -58,7 +58,7 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Source Record — independent camera recording\n\nsource-record open\nsource-record status|start|stop|toggle|settings|devices [--json]\nsource-record configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsource-record check [--json]\nsource-record skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Source Record — independent camera recording\n\nsource-record open\nsource-record status|start|stop|toggle|settings|devices|ensure [--json]\nsource-record configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsource-record check [--json]\nsource-record skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
@@ -77,7 +77,7 @@ static int cli(const QStringList &args) {
         puts(QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
         return result["ok"].toBool() ? 0 : 1;
     }
-    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure"}.contains(command)) {
+    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure"}.contains(command)) {
         fputs("Unknown command. Run source-record --help.\n", stderr); return 1;
     }
     QJsonObject request{{"command", command}};
@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("source-record"); app.setApplicationVersion("0.2.0");
+    app.setApplicationName("source-record"); app.setApplicationVersion("0.3.0");
     app.setDesktopFileName("source-record");
     app.setWindowIcon(QIcon::fromTheme("source-record"));
     app.setQuitOnLastWindowClosed(false);
@@ -159,6 +159,22 @@ int main(int argc, char *argv[]) {
                 if (socket->bytesAvailable() > 65536) { socket->abort(); return; }
                 if (!socket->canReadLine()) return;
                 const auto request = QJsonDocument::fromJson(socket->readLine(65536)).object();
+                if (request["command"] == "subscribe-preview") {
+                    if (socket->property("previewSubscribed").toBool()) return;
+                    socket->setProperty("previewSubscribed", true);
+                    backend.addPreviewClient();
+                    QObject::connect(socket, &QLocalSocket::disconnected, &backend, &Backend::removePreviewClient);
+                    QObject::connect(&backend, &Backend::frameReady, socket, [&, socket] {
+                        // Skip busy clients instead of queuing camera frames behind a slow shell.
+                        if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 0) return;
+                        const auto jpeg = backend.previewJpeg();
+                        if (jpeg.size() > 750000) return;
+                        const QJsonObject event{{"event", "preview"}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
+                        socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
+                        socket->flush();
+                    });
+                    return;
+                }
                 if (request["command"] == "subscribe-meter") {
                     if (socket->property("meterSubscribed").toBool()) return;
                     socket->setProperty("meterSubscribed", true);

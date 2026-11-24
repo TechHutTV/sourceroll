@@ -6,5 +6,6 @@
   "start": "Start kameraoptagelse",
   "stop": "Stop og gem",
   "open": "Åbn forhåndsvisning og indstillinger",
-  "independent": "Kun kameraoptagelse. OBS styres separat."
+  "preview.opening": "Åbner kamera…",
+  "preview.unavailable": "Kamera utilgængeligt"
 }

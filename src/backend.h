@@ -29,6 +29,9 @@ public:
     int frameNumber() const { return m_frameNumber; }
     double peakDb() const { return m_peak; }
     QImage previewImage() const { return m_image; }
+    QByteArray previewJpeg() const { return m_previewJpeg; }
+    void addPreviewClient();
+    void removePreviewClient();
     QJsonObject handle(const QJsonObject &request);
     static QVariantList cameraModes(const QString &device);
     static QStringList ffmpegArguments(const QJsonObject &settings, const QString &output, bool recording);
@@ -69,11 +72,13 @@ private:
     QJsonObject m_settings;
     QVariantList m_cameras, m_microphones;
     QByteArray m_frames, m_messages, m_log;
+    QByteArray m_previewJpeg;
     QImage m_image;
     QString m_state = "idle", m_error, m_output, m_lastOutput;
     double m_peak = -90;
     double m_pendingPeak = -90;
     qint64 m_recordedMs = 0;
     int m_frameNumber = 0;
+    int m_previewClients = 0;
     bool m_recording = false, m_visible = false, m_stopping = false, m_shuttingDown = false;
 };
