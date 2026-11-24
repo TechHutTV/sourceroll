@@ -7,6 +7,7 @@ import tempfile
 root = pathlib.Path(__file__).resolve().parents[1]
 model = (root / 'plugin/Model.js').read_text().replace('.pragma library', '')
 qml = (root / 'plugin/BarWidget.qml').read_text()
+assert 'retainWhileLoading: true' in qml, 'Live preview must retain its previous frame during image loading'
 for text_item in re.findall(r'\bText\s*\{([^{}]*)', qml):
     assert 'textFormat: Text.PlainText' in text_item, 'Plugin text must never auto-render markup'
 script = model + r'''

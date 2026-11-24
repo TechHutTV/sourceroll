@@ -124,7 +124,12 @@ BarWidget {
                 color: Commons.Color.background
                 border.width: 1; border.color: Qt.alpha(Commons.Color.foreground, 0.2)
                 radius: Style.cornerRadius; clip: true
-                Image { anchors.fill: parent; anchors.margins: 1; source: root.previewSource; cache: false; fillMode: Image.PreserveAspectFit }
+                Image {
+                    anchors.fill: parent; anchors.margins: 1
+                    source: root.previewSource; cache: false
+                    asynchronous: true; retainWhileLoading: true
+                    fillMode: Image.PreserveAspectFit
+                }
                 Text {
                     anchors.centerIn: parent; width: parent.width - 24
                     visible: root.previewSource === ""; textFormat: Text.PlainText

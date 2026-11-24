@@ -39,3 +39,5 @@ The monitoring preview is 640 pixels wide at 30 fps. This does not resize or dro
 
 - Shared-feed hardware check received valid JPEGs for two simultaneous subscribers (about 15 KB per frame), confirmed the same single FFmpeg PID, and confirmed capture stopped after the last subscriber disconnected with the window hidden. No recording was started.
 - Removed the OBS independence footer from the widget at the user’s request.
+- Restarted the shell after finding an old cached QML component. The updated widget loads the preview and has no OBS footer.
+- Widget image loading is asynchronous and retains the previous frame while the next JPEG is decoded, avoiding a blank frame on each source change. Plugin regression checks enforce that behavior.

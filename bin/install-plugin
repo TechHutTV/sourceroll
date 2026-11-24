@@ -12,3 +12,5 @@ mkdir -p "$DEST"
 cp -R "$ROOT/plugin/." "$DEST/"
 omarchy-shell shell rescanPlugins
 omarchy plugin enable local.source-record --section right --before omarchy.tray
+# The shell can keep QML components cached across a plugin rescan.
+omarchy restart shell

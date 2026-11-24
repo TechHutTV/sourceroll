@@ -35,7 +35,7 @@ bin/test
 bin/install
 ```
 
-`bin/install` builds an Arch package and uses normal sudo authentication, then installs/enables the user-owned plugin. Nothing under /usr/share/omarchy is edited. The source of the bar plugin lives in `plugin/`; run `bin/install-plugin` after editing it. Installation backs up an existing plugin directory before replacing it. The bar configuration is managed through `omarchy plugin enable`.
+`bin/install` builds an Arch package and uses normal sudo authentication, then installs/enables the user-owned plugin. Nothing under /usr/share/omarchy is edited. The source of the bar plugin lives in `plugin/`; run `bin/install-plugin` after editing it. Installation backs up an existing plugin directory before replacing it and restarts the shell to clear cached QML. The recorder runs separately and keeps active recordings running. The bar configuration is managed through `omarchy plugin enable`.
 
 Settings are saved atomically in `~/.config/source-record/settings.json`. Recordings default to the configured Videos folder under `Source Record`. One per-user resident app owns the FFmpeg child and listens on a user-only local socket; a lock prevents duplicate recorders. There is no network service, account, telemetry, or automatic recording at login.
 
