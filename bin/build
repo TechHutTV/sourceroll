@@ -3,5 +3,5 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build"
 cd "$ROOT/build"
-qmake6 "$ROOT/source-record.pro"
+qmake6 "$ROOT/multitake.pro"
 make -j"$(nproc)"

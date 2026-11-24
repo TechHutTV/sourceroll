@@ -6,7 +6,7 @@ import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
 model = (root / 'plugin/Model.js').read_text().replace('.pragma library', '')
-qml = (root / 'plugin/BarWidget.qml').read_text()
+qml = '\n'.join(p.read_text() for p in (root / 'plugin').glob('*.qml'))
 assert 'retainWhileLoading: true' in qml, 'Live preview must retain its previous frame during image loading'
 for text_item in re.findall(r'\bText\s*\{([^{}]*)', qml):
     assert 'textFormat: Text.PlainText' in text_item, 'Plugin text must never auto-render markup'
@@ -28,6 +28,8 @@ assert(parseMeter('{"event":"meter","peakDb":0}') === 0)
 assert(parseMeter('{"event":"meter","peakDb":-18}') === -18)
 assert(parseMeter('{"event":"meter","peakDb":"<img>"}') === null)
 assert(parseMeter('x'.repeat(513)) === null)
+assert(parseDesktopMeter('{"event":"meter","desktopPeakDb":-12}') === -12)
+assert(parseDesktopMeter('{"event":"meter","desktopPeakDb":"bad"}') === null)
 console.log('Plugin parsing and rich-text boundary tests passed.')
 '''
 with tempfile.NamedTemporaryFile(suffix='.js', mode='w') as f:

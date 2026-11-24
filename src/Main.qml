@@ -5,10 +5,10 @@ import QtQuick.Layouts
 
 ApplicationWindow {
     id: win
-    width: 980; height: 730
-    minimumWidth: 900; minimumHeight: 690
+    width: 1120; height: 850
+    minimumWidth: 980; minimumHeight: 760
     visible: initialVisible
-    title: qsTr("Source Record")
+    title: qsTr("Multitake")
     color: theme.colors.background
     Material.theme: theme.dark ? Material.Dark : Material.Light
     Material.accent: theme.accent
@@ -22,7 +22,7 @@ ApplicationWindow {
     property var prefs: backend.settings
     property bool helpVisible: false
     property bool allowQuit: false
-    property bool busy: state.recording || state.state === "stopping"
+    property bool busy: state.recording || state.state === "stopping" || state.state === "validating"
     function indexOf(items, id) {
         for (let i = 0; i < items.length; ++i) if (items[i].id === id) return i
         return -1
@@ -32,6 +32,9 @@ ApplicationWindow {
         return Math.floor(s / 3600).toString().padStart(2, "0") + ":" + Math.floor(s % 3600 / 60).toString().padStart(2, "0") + ":" + (s % 60).toString().padStart(2, "0")
     }
     function stateLabel() {
+        if (state.state === "waiting-screen") return qsTr("Choose a screen or window…")
+        if (state.state === "validating") return qsTr("Checking saved files…")
+        if (state.state === "saved") return qsTr("Session saved")
         if (state.state === "starting") return qsTr("Starting…")
         if (state.state === "recording") return qsTr("Recording")
         if (state.state === "stopping") return qsTr("Saving…")
@@ -51,6 +54,25 @@ ApplicationWindow {
     component PlainLabel: Label { textFormat: Text.PlainText; color: theme.colors.foreground }
     component Caption: PlainLabel { color: theme.colors.secondary; font.pixelSize: theme.style.fontSize }
 
+
+    component SourceSwitch: CheckBox {
+        id: toggle
+        font.family: win.font.family; font.pixelSize: theme.style.fontSize
+        implicitHeight: 30; spacing: 8
+        enabled: !win.busy
+        indicator: Rectangle {
+            x: toggle.leftPadding; y: (toggle.height - height) / 2
+            width: 15; height: 15; radius: Math.min(3, theme.radius)
+            color: toggle.checked ? theme.accent : theme.style.normalFill
+            border.width: 1; border.color: toggle.checked ? theme.accent : theme.style.normalBorder
+            Text { anchors.centerIn: parent; text: toggle.checked ? "✓" : ""; textFormat: Text.PlainText; color: theme.accentForeground; font.pixelSize: 12 }
+        }
+        contentItem: Text {
+            text: toggle.text; textFormat: Text.PlainText; font: toggle.font
+            color: toggle.enabled ? theme.colors.foreground : theme.colors.secondary
+            leftPadding: 23; verticalAlignment: Text.AlignVCenter
+        }
+    }
 
     component RecordButton: Button {
         id: control
@@ -154,11 +176,20 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 ColumnLayout {
                     spacing: 3
-                    PlainLabel { text: qsTr("Source Record"); font.pixelSize: theme.style.fontSize + 7; font.weight: Font.DemiBold }
+                    PlainLabel { text: qsTr("Multitake"); font.pixelSize: theme.style.fontSize + 7; font.weight: Font.DemiBold }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle { width: 8; height: 8; radius: 4; color: win.state.recording ? theme.colors.urgent : theme.accent }
                 PlainLabel { text: win.stateLabel(); color: win.state.recording ? theme.colors.urgent : theme.colors.secondary }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 18
+                SourceSwitch { text: qsTr("Screen"); checked: !!win.prefs.screenEnabled; onClicked: backend.setSetting("screenEnabled", checked) }
+                SourceSwitch { text: qsTr("Camera"); checked: !!win.prefs.cameraEnabled; onClicked: backend.setSetting("cameraEnabled", checked) }
+                SourceSwitch { text: qsTr("Microphone"); checked: !!win.prefs.microphoneEnabled; onClicked: backend.setSetting("microphoneEnabled", checked) }
+                SourceSwitch { text: qsTr("Desktop audio"); checked: !!win.prefs.desktopEnabled; onClicked: backend.setSetting("desktopEnabled", checked) }
+                Item { Layout.fillWidth: true }
+                Caption { text: qsTr("Separate files · one take") }
             }
             RowLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 18
@@ -178,7 +209,7 @@ ApplicationWindow {
                         PlainLabel {
                             anchors.centerIn: parent
                             visible: !preview.visible
-                            text: win.state.state === "error" ? qsTr("Camera unavailable") : qsTr("Waiting for camera…")
+                            text: win.state.state === "error" ? qsTr("Camera unavailable") : !win.prefs.cameraEnabled ? qsTr("Camera source is off") : qsTr("Waiting for camera…")
                             color: theme.colors.secondary
                         }
                         Rectangle {
@@ -208,14 +239,25 @@ ApplicationWindow {
                         }
                         Caption { text: qsTr("Meter only — microphone is not played through speakers."); wrapMode: Text.Wrap; Layout.fillWidth: true }
                     }
+                    ColumnLayout {
+                        Layout.fillWidth: true; visible: !!win.prefs.desktopEnabled; spacing: 5
+                        Caption { text: qsTr("Desktop audio level") }
+                        Rectangle {
+                            Layout.fillWidth: true; height: 7; color: theme.colors.muted
+                            Rectangle { width: parent.width * Math.max(0, Math.min(1, (backend.desktopPeakDb + 60) / 60)); height: parent.height; color: backend.desktopPeakDb > -3 ? theme.colors.urgent : theme.accent }
+                        }
+                    }
                 }
                 Rectangle {
-                    Layout.preferredWidth: 330; Layout.fillHeight: true
+                    Layout.preferredWidth: 365; Layout.fillHeight: true
                     color: theme.colors.background; radius: theme.radius
                     border.width: 1; border.color: theme.colors.muted
-                    ColumnLayout {
-                        anchors.fill: parent; anchors.margins: 16; spacing: 6
-                        PlainLabel { text: qsTr("Capture settings"); font.weight: Font.DemiBold; font.pixelSize: theme.style.fontSize + 1 }
+                    ScrollView {
+                        anchors.fill: parent; anchors.margins: 16
+                        clip: true; contentWidth: availableWidth
+                        ColumnLayout {
+                        width: parent.width; spacing: 8
+                        PlainLabel { text: qsTr("Sources"); font.weight: Font.DemiBold; font.pixelSize: theme.style.fontSize + 1 }
                         Caption { text: qsTr("Camera") }
                         RecordCombo {
                             objectName: "cameraChoice"
@@ -250,15 +292,43 @@ ApplicationWindow {
                             onActivated: backend.setSetting("encoding", currentIndex === 0 ? "original" : "h264")
                         }
                         Caption { text: qsTr("Original MJPEG / H.264 is saved without re-encoding. Raw camera modes use high-quality H.264. Audio is uncompressed."); wrapMode: Text.Wrap; Layout.fillWidth: true }
-                        Item { Layout.fillHeight: true; Layout.minimumHeight: 2 }
+                        Caption { text: qsTr("Screen or window") }
+                        RecordCombo {
+                            Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.screenEnabled
+                            model: backend.screens; textRole: "label"
+                            currentIndex: win.indexOf(backend.screens, win.prefs.screenTarget)
+                            onActivated: backend.setSetting("screenTarget", model[currentIndex].id)
+                        }
+                        RecordCombo {
+                            Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.screenEnabled
+                            model: [qsTr("30 fps"), qsTr("60 fps")]
+                            currentIndex: win.prefs.screenFps >= 60 ? 1 : 0
+                            onActivated: backend.setSetting("screenFps", currentIndex === 0 ? 30 : 60)
+                        }
+                        Caption { text: qsTr("Desktop audio source") }
+                        RecordCombo {
+                            Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.desktopEnabled
+                            model: backend.desktopSources; textRole: "label"
+                            currentIndex: win.indexOf(backend.desktopSources, win.prefs.desktopAudio)
+                            onActivated: backend.setSetting("desktopAudio", model[currentIndex].id)
+                        }
+                        Caption { text: qsTr("Each enabled source is saved separately. Session timing and an editing timeline are included."); wrapMode: Text.Wrap; Layout.fillWidth: true }
                         RecordButton { text: qsTr("Refresh devices"); implicitHeight: theme.style.controlHeight + 4; Layout.fillWidth: true; enabled: !win.busy; onClicked: backend.refreshDevices() }
+                        RecordButton { text: qsTr("Recover interrupted take"); Layout.fillWidth: true; enabled: !win.busy; onClicked: backend.recoverSession() }
+                        }
                     }
                 }
             }
             Rectangle {
-                visible: win.state.error !== ""; Layout.fillWidth: true; implicitHeight: errorText.implicitHeight + 20
+                visible: !!win.state.error; Layout.fillWidth: true; implicitHeight: errorText.implicitHeight + 20
                 color: Qt.tint(theme.colors.background, Qt.alpha(theme.colors.urgent, 0.12)); radius: theme.radius
                 PlainLabel { id: errorText; anchors.fill: parent; anchors.margins: 10; text: win.state.error || ""; wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight; color: theme.colors.urgent }
+            }
+            Caption { text: win.state.warning || ""; visible: text !== ""; wrapMode: Text.Wrap; Layout.fillWidth: true; color: theme.accent }
+            Caption {
+                Layout.fillWidth: true; visible: win.busy
+                text: (win.state.sources || []).map(function(s) { return s.id + ": " + s.state }).join("    ")
+                elide: Text.ElideRight
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -275,7 +345,7 @@ ApplicationWindow {
                 Caption { text: qsTr("Space: record / stop    ·    Esc: hide    ·    ?: shortcuts"); Layout.fillWidth: true }
                 RecordButton { text: qsTr("Hide to bar"); onClicked: win.hide() }
                 RecordButton {
-                    text: win.state.recording ? qsTr("Stop and save") : qsTr("Start recording")
+                    text: win.state.recording ? qsTr("Stop and save") : qsTr("Record enabled sources")
                     highlighted: true; enabled: win.state.state !== "stopping"
                     onClicked: backend.toggle()
                 }
@@ -284,9 +354,9 @@ ApplicationWindow {
     }
     Dialog {
         id: quitDialog; anchors.centerIn: parent; modal: true; width: 420
-        title: win.state.recording ? qsTr("Stop recording and quit?") : qsTr("Quit Source Record?")
+        title: win.state.recording ? qsTr("Stop recording and quit?") : qsTr("Quit Multitake?")
         standardButtons: Dialog.Yes | Dialog.No
-        onAccepted: { win.allowQuit = true; backend.stop(); Qt.quit() }
+        onAccepted: { win.allowQuit = true; backend.shutdown(); Qt.quit() }
         contentItem: PlainLabel { text: win.state.recording ? qsTr("The current clip will be saved before quitting.") : qsTr("The bar can start the recorder again."); padding: 14 }
     }
     Dialog {

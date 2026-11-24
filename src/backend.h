@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QImage>
 #include <optional>
+class SessionRecorder;
 
 class Backend : public QObject {
     Q_OBJECT
@@ -18,6 +19,9 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
     Q_PROPERTY(int frameNumber READ frameNumber NOTIFY frameReady)
     Q_PROPERTY(double peakDb READ peakDb NOTIFY peakChanged)
+    Q_PROPERTY(double desktopPeakDb READ desktopPeakDb NOTIFY peakChanged)
+    Q_PROPERTY(QVariantList screens READ screens NOTIFY devicesChanged)
+    Q_PROPERTY(QVariantList desktopSources READ desktopSources NOTIFY devicesChanged)
 public:
     explicit Backend(const QString &configFile = {}, QObject *parent = nullptr);
     ~Backend() override;
@@ -28,6 +32,9 @@ public:
     QVariantMap status() const;
     int frameNumber() const { return m_frameNumber; }
     double peakDb() const { return m_peak; }
+    double desktopPeakDb() const { return m_desktopPeak; }
+    QVariantList screens() const { return m_screens; }
+    QVariantList desktopSources() const { return m_desktopSources; }
     QImage previewImage() const { return m_image; }
     QByteArray previewJpeg() const { return m_previewJpeg; }
     void addPreviewClient();
@@ -38,14 +45,17 @@ public:
     static bool validSettings(const QJsonObject &settings, QString *error);
     static QString socketPath();
     static std::optional<double> parsePeak(const QByteArray &line);
+    static bool importLegacySettings(const QString &legacy, const QString &target, QString *error = nullptr);
     Q_INVOKABLE void refreshDevices();
     Q_INVOKABLE bool setSetting(const QString &key, const QVariant &value);
     Q_INVOKABLE bool start();
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void shutdown();
     Q_INVOKABLE void toggle();
     Q_INVOKABLE void setWindowVisible(bool visible);
     Q_INVOKABLE void openFolder();
     Q_INVOKABLE void dismissError();
+    Q_INVOKABLE bool recoverSession();
 signals:
     void devicesChanged();
     void settingsChanged();
@@ -62,6 +72,7 @@ private:
     bool saveSettings();
     void fail(const QString &message);
     QProcess m_process;
+    SessionRecorder *m_session = nullptr;
     QTimer m_tick;
     QTimer m_meter;
     QTimer m_restart;
@@ -70,13 +81,14 @@ private:
     QElapsedTimer m_lastFrame;
     QString m_configFile;
     QJsonObject m_settings;
-    QVariantList m_cameras, m_microphones;
+    QVariantList m_cameras, m_microphones, m_screens, m_desktopSources;
     QByteArray m_frames, m_messages, m_log;
     QByteArray m_previewJpeg;
     QImage m_image;
     QString m_state = "idle", m_error, m_output, m_lastOutput;
     double m_peak = -90;
     double m_pendingPeak = -90;
+    double m_desktopPeak = -90;
     qint64 m_recordedMs = 0;
     int m_frameNumber = 0;
     int m_previewClients = 0;

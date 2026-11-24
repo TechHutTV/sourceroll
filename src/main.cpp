@@ -58,11 +58,11 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Source Record — independent camera recording\n\nsource-record open\nsource-record status|start|stop|toggle|settings|devices|ensure [--json]\nsource-record configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsource-record check [--json]\nsource-record skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Multitake — separate sources, one take\n\nmultitake open\nmultitake status|start|stop|toggle|settings|devices|ensure|recover [--json]\nmultitake configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nmultitake check [--json]\nmultitake skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
-        const QString directory = QDir::homePath() + "/.codex/skills/source-record";
+        const QString directory = QDir::homePath() + "/.codex/skills/multitake";
         QDir().mkpath(directory);
         QFile source(":/SKILL.md");
         if (!source.open(QIODevice::ReadOnly)) return 1;
@@ -73,23 +73,38 @@ static int cli(const QStringList &args) {
     }
     if (command == "check") {
         auto tool = [](const QString &name) { return !QStandardPaths::findExecutable(name).isEmpty(); };
-        QJsonObject result{{"ok", tool("ffmpeg") && tool("pactl")}, {"ffmpeg", tool("ffmpeg")}, {"pactl", tool("pactl")}};
+        QJsonObject result;
+        bool ready = true;
+        for (const QString &name : {QString("ffmpeg"), QString("ffprobe"), QString("pactl"), QString("gpu-screen-recorder")}) {
+            const bool available = tool(name); result[name] = available; ready = ready && available;
+        }
+        result["ok"] = ready;
         puts(QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
         return result["ok"].toBool() ? 0 : 1;
     }
-    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure"}.contains(command)) {
-        fputs("Unknown command. Run source-record --help.\n", stderr); return 1;
+    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover"}.contains(command)) {
+        fputs("Unknown command. Run multitake --help.\n", stderr); return 1;
     }
     QJsonObject request{{"command", command}};
     if (command == "configure") {
         QJsonObject settings;
         for (int i = 2; i < args.size(); ++i) {
-            const QString key = args[i].mid(2);
+            QString key = args[i].mid(2);
+            const QMap<QString,QString> aliases{{"camera-enabled","cameraEnabled"},{"screen-enabled","screenEnabled"},{"microphone-enabled","microphoneEnabled"},{"desktop-enabled","desktopEnabled"},{"screen-target","screenTarget"},{"screen-fps","screenFps"},{"desktop-audio","desktopAudio"}};
+            key = aliases.value(key, key);
             if (args[i] == "--json") continue;
-            if (!QStringList{"camera", "mode", "audio", "directory", "encoding"}.contains(key) || i + 1 >= args.size()) {
+            if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "desktopAudio"}.contains(key) || i + 1 >= args.size()) {
                 fputs("Invalid configuration option.\n", stderr); return 1;
             }
-            settings[key] = args[++i];
+            const QString value = args[++i];
+            if (key.endsWith("Enabled")) {
+                if (value != "true" && value != "false") { fputs("Source switches require true or false.\n", stderr); return 1; }
+                settings[key] = value == "true";
+            } else if (key == "screenFps") {
+                bool valid = false; const int rate = value.toInt(&valid);
+                if (!valid || rate < 15 || rate > 120) { fputs("Frame rate must be between 15 and 120.\n", stderr); return 1; }
+                settings[key] = rate;
+            } else settings[key] = value;
         }
         request["settings"] = settings;
     }
@@ -103,13 +118,13 @@ static int cli(const QStringList &args) {
         // A resident must not inherit the CLI's stdout pipe, or bar collectors never finish.
         resident.setStandardInputFile(QProcess::nullDevice());
         resident.setStandardOutputFile(QProcess::nullDevice());
-        const QString stateDir = QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + "/source-record";
+        const QString stateDir = QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + "/multitake";
         QDir().mkpath(stateDir);
         resident.setStandardErrorFile(stateDir + "/app.log", QIODevice::Append);
-        if (!resident.startDetached()) { fputs("Could not start Source Record.\n", stderr); return 1; }
+        if (!resident.startDetached()) { fputs("Could not start Multitake.\n", stderr); return 1; }
         for (int i = 0; i < 60 && response.isEmpty(); ++i) { QThread::msleep(100); response = send(request); }
     }
-    if (response.isEmpty()) { fputs("Could not reach Source Record.\n", stderr); return 1; }
+    if (response.isEmpty()) { fputs("Could not reach Multitake.\n", stderr); return 1; }
     puts(QJsonDocument(response).toJson(QJsonDocument::Compact).constData());
     if (!response["ok"].toBool()) { fputs(qPrintable(response["error"].toString() + '\n'), stderr); return 1; }
     return 0;
@@ -120,13 +135,13 @@ int main(int argc, char *argv[]) {
     const bool gui = command == "open" || command == "--background" || argc == 1;
     if (!gui) {
         QCoreApplication app(argc, argv);
-        app.setApplicationName("source-record");
+        app.setApplicationName("multitake");
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("source-record"); app.setApplicationVersion("0.3.0");
-    app.setDesktopFileName("source-record");
-    app.setWindowIcon(QIcon::fromTheme("source-record"));
+    app.setApplicationName("multitake"); app.setApplicationVersion("0.4.0");
+    app.setDesktopFileName("multitake");
+    app.setWindowIcon(QIcon::fromTheme("multitake"));
     app.setQuitOnLastWindowClosed(false);
     // Deliver termination on Qt's event loop so the recorder can finish its file.
     if (pipe2(terminationPipe, O_NONBLOCK | O_CLOEXEC) != 0) return 1;
@@ -168,7 +183,7 @@ int main(int argc, char *argv[]) {
                         // Skip busy clients instead of queuing camera frames behind a slow shell.
                         if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 0) return;
                         const auto jpeg = backend.previewJpeg();
-                        if (jpeg.size() > 750000) return;
+                        if (jpeg.isEmpty() || jpeg.size() > 750000) return;
                         const QJsonObject event{{"event", "preview"}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
                         socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
                         socket->flush();
@@ -181,7 +196,7 @@ int main(int argc, char *argv[]) {
                     auto push = [&, socket] {
                         // A paused shell gets the next live reading, never a growing stale queue.
                         if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 2048) return;
-                        const QJsonObject event{{"event", "meter"}, {"peakDb", backend.peakDb()}};
+                        const QJsonObject event{{"event", "meter"}, {"peakDb", backend.peakDb()}, {"desktopPeakDb", backend.desktopPeakDb()}};
                         socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
                         socket->flush();
                     };
@@ -199,8 +214,11 @@ int main(int argc, char *argv[]) {
     if (engine.rootObjects().isEmpty()) return 1;
     auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     QObject::connect(&termination, &QSocketNotifier::activated, &app, [&] {
+        termination.setEnabled(false);
+        char pending[64];
+        while (::read(terminationPipe[0], pending, sizeof(pending)) > 0) {}
         window->setProperty("allowQuit", true);
-        backend.stop();
+        backend.shutdown();
         app.quit();
     });
     QObject::connect(&backend, &Backend::openRequested, window, [window] { window->show(); window->raise(); window->requestActivate(); });

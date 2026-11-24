@@ -1,11 +1,18 @@
 {
-  "bar.tooltip": "Source Record · klik for styring · midterklik optager / stopper · højreklik åbner forhåndsvisning",
-  "unavailable": "Optageren er utilgængelig. Åbn Source Record for at kontrollere den.",
+  "bar.tooltip": "Multitake · klik for styring · midterklik optager / stopper · højreklik åbner forhåndsvisning",
+  "unavailable": "Optageren er utilgængelig. Åbn Multitake for at kontrollere den.",
   "recording": "Optager · %1",
-  "idle": "Kameraoptageren er klar",
-  "start": "Start kameraoptagelse",
+  "idle": "Klar til optagelse",
+  "start": "Optag valgte kilder",
   "stop": "Stop og gem",
   "open": "Åbn forhåndsvisning og indstillinger",
   "preview.opening": "Åbner kamera…",
-  "preview.unavailable": "Kamera utilgængeligt"
+  "preview.unavailable": "Kamera utilgængeligt",
+  "preview.off": "Kamerakilden er slået fra",
+  "source.screen": "Skærm",
+  "source.camera": "Kamera",
+  "source.microphone": "Mikrofon",
+  "source.desktop": "Systemlyd",
+  "choose.screen": "Vælg en skærm eller et vindue…",
+  "validating": "Kontrollerer gemte filer…"
 }

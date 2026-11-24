@@ -1,16 +1,73 @@
-#!/bin/sh
-set -eu
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-omarchy plugin validate "$ROOT/plugin"
-DEST="$HOME/.config/omarchy/plugins/local.source-record"
-if [ -d "$DEST" ]; then
-    BACKUP="$HOME/.local/state/source-record/plugin-backups/$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$(dirname "$BACKUP")"
-    cp -a "$DEST" "$BACKUP"
-fi
-mkdir -p "$DEST"
-cp -R "$ROOT/plugin/." "$DEST/"
-omarchy-shell shell rescanPlugins
-omarchy plugin enable local.source-record --section right --before omarchy.tray
-# The shell can keep QML components cached across a plugin rescan.
-omarchy restart shell
+#!/usr/bin/env python3
+"""Install the user widget, preserving the placement and backup of its former name."""
+from pathlib import Path
+from datetime import datetime
+import json
+import os
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+
+root = Path(__file__).resolve().parents[1]
+home = Path.home()
+subprocess.run(['omarchy', 'plugin', 'validate', str(root / 'plugin')], check=True)
+legacy = home / '.config/omarchy/plugins/local.source-record'
+destination = home / '.config/omarchy/plugins/local.multitake'
+backup = home / '.local/state/multitake/plugin-backups' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+backup.mkdir(parents=True)
+
+if legacy.exists() and shutil.which('source-record'):
+    result = subprocess.run(['source-record', 'status', '--json'], capture_output=True, text=True, timeout=15)
+    if result.returncode == 0:
+        state = json.loads(result.stdout)
+        if state.get('recording'):
+            raise SystemExit('Source Record is recording. Stop that take before finishing the rename; its files were left alone.')
+        lock = Path(os.environ.get('XDG_RUNTIME_DIR', '/run/user/' + str(os.getuid()))) / 'source-record.sock.lock'
+        if state.get('running') and lock.exists():
+            pid = int(lock.read_text().splitlines()[0])
+            if Path(f'/proc/{pid}/comm').read_text().strip() != 'source-record':
+                raise SystemExit('Previous recorder PID did not match; leaving it alone.')
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(60):
+                time.sleep(.1)
+                status = subprocess.run(['source-record', 'status', '--json'], capture_output=True, text=True, timeout=15)
+                if status.returncode == 0 and not json.loads(status.stdout).get('running'):
+                    break
+            else:
+                raise SystemExit('Previous recorder did not stop. Its package and widget were preserved.')
+
+config = home / '.config/omarchy/shell.json'
+placed = False
+if config.exists():
+    data = json.loads(config.read_text())
+    shutil.copy2(config, backup / 'shell.json')
+    layout = data.get('bar', {}).get('layout', {})
+    for section, entries in layout.items():
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get('id') == 'local.source-record':
+                entry['id'] = 'local.multitake'
+                placed = True
+    plugins = data.get('plugins', [])
+    if isinstance(plugins, list):
+        for index, entry in enumerate(plugins):
+            if entry == 'local.source-record': plugins[index] = 'local.multitake'
+            elif isinstance(entry, dict) and entry.get('id') == 'local.source-record': entry['id'] = 'local.multitake'
+    with tempfile.NamedTemporaryFile(mode='w', dir=config.parent, delete=False) as output:
+        json.dump(data, output, indent=2)
+        output.write('\n')
+        temporary = Path(output.name)
+    temporary.chmod(config.stat().st_mode & 0o777)
+    os.replace(temporary, config)
+if destination.exists(): shutil.copytree(destination, backup / 'multitake')
+if legacy.exists(): shutil.move(str(legacy), str(backup / 'source-record'))
+destination.mkdir(parents=True, exist_ok=True)
+shutil.copytree(root / 'plugin', destination, dirs_exist_ok=True)
+subprocess.run(['omarchy-shell', 'shell', 'rescanPlugins'], check=True)
+command = ['omarchy', 'plugin', 'enable', 'local.multitake']
+if not placed:
+    command += ['--section', 'right', '--before', 'omarchy.tray']
+subprocess.run(command, check=True)
+subprocess.run(['omarchy', 'restart', 'shell'], check=True)
+print('Multitake widget installed. Previous widget and bar settings backed up in', backup)

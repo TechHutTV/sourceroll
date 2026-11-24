@@ -4,3 +4,6 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT/pkgbuild"
 makepkg -fsi "$@"
 "$ROOT/bin/install-plugin"
+if pacman -Q source-record >/dev/null 2>&1; then
+  sudo pacman -R --noconfirm source-record
+fi

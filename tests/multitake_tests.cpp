@@ -13,6 +13,7 @@
 #include <QQuickStyle>
 #include <QDir>
 #include "backend.h"
+#include "session.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -20,6 +21,9 @@ class DemoBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList cameras READ cameras CONSTANT)
     Q_PROPERTY(QVariantList microphones READ microphones CONSTANT)
+    Q_PROPERTY(QVariantList screens READ screens CONSTANT)
+    Q_PROPERTY(QVariantList desktopSources READ desktopSources CONSTANT)
+    Q_PROPERTY(double desktopPeakDb READ desktopPeakDb CONSTANT)
     Q_PROPERTY(QVariantList modes READ modes CONSTANT)
     Q_PROPERTY(QVariantMap settings READ settings CONSTANT)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
@@ -28,9 +32,12 @@ class DemoBackend : public QObject {
 public:
     QVariantList cameras() const { return {QVariantMap{{"id", "demo"}, {"label", "Studio Camera"}}}; }
     QVariantList microphones() const { return {QVariantMap{{"id", "mic"}, {"label", "Studio Microphone"}}}; }
+    QVariantList screens() const { return {QVariantMap{{"id", "portal"}, {"label", "Choose screen or window"}}}; }
+    QVariantList desktopSources() const { return {QVariantMap{{"id", "desktop"}, {"label", "Desktop audio"}}}; }
+    double desktopPeakDb() const { return -28; }
     QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
-    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Source Record"}, {"encoding", "original"}}; }
-    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Source Record/camera-demo.mkv"}}; }
+    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Multitake"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
+    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Multitake/camera-demo.mkv"}}; }
     int frameNumber() const { return 1; }
     double peakDb() const { return -18; }
     Q_INVOKABLE void setWindowVisible(bool) {}
@@ -38,6 +45,8 @@ public:
     Q_INVOKABLE void stop() { recording = false; emit statusChanged(); }
     Q_INVOKABLE void openFolder() {}
     Q_INVOKABLE void refreshDevices() {}
+    Q_INVOKABLE bool recoverSession() { return true; }
+    Q_INVOKABLE void shutdown() {}
     Q_INVOKABLE bool setSetting(const QString &, const QVariant &) { return true; }
     bool recording = false;
 signals:
@@ -67,6 +76,80 @@ private:
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(contents), contents.size());
     }
 private slots:
+    void migrationKeepsExistingPreferences() {
+        QTemporaryDir dir;
+        const auto old = dir.filePath("old.json"), target = dir.filePath("new/settings.json");
+        write(old, "{\"directory\":\"/Videos/My takes\",\"audio\":\"custom-microphone\"}");
+        QVERIFY(Backend::importLegacySettings(old, target));
+        QFile imported(target); QVERIFY(imported.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(imported.readAll()).object()["directory"].toString(), "/Videos/My takes"); imported.close();
+        write(old, "{\"directory\":\"/different\"}");
+        QVERIFY(Backend::importLegacySettings(old, target));
+        QVERIFY(imported.open(QIODevice::ReadOnly)); QVERIFY(imported.readAll().contains("My takes")); imported.close();
+        write(dir.filePath("broken.json"), "not json"); QString error;
+        QVERIFY(!Backend::importLegacySettings(dir.filePath("broken.json"), dir.filePath("bad.json"), &error));
+        QVERIFY(!QFileInfo::exists(dir.filePath("bad.json")));
+    }
+    void sourceSelectionAndDeviceTimestamps() {
+        QJsonObject selected{{"cameraEnabled",false},{"screenEnabled",false},{"microphoneEnabled",false},{"desktopEnabled",false}};
+        QString error; QVERIFY(!SessionRecorder::validateSources(selected,&error));
+        selected["screenEnabled"] = true; selected["screenTarget"] = "portal";
+        QVERIFY(SessionRecorder::validateSources(selected,&error));
+        selected["microphoneEnabled"] = true; selected["audio"] = "none";
+        QVERIFY(!SessionRecorder::validateSources(selected,&error));
+        QCOMPARE(SessionRecorder::packetTimestamp("[video] demuxer -> ist_index:0:0 type:video pkt_pts_time:1795556332.248325"),1795556332248325LL);
+        QCOMPARE(SessionRecorder::packetTimestamp("demuxer+ffmpeg -> pkt_pts_time:0.2"),0LL);
+    }
+    void editingTimelinePreservesIndependentOffsets() {
+        QJsonObject manifest{{"sources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","Video"},{"file","screen.mkv"},{"state","saved"},{"firstMonotonicUs",10000000},{"durationSeconds",3}},
+            QJsonObject{{"id","camera"},{"kind","Video"},{"file","camera.mkv"},{"state","saved"},{"firstMonotonicUs",10200000},{"durationSeconds",2.8}}
+        }}};
+        const auto timeline = SessionRecorder::timeline(manifest,"/tmp/test take");
+        const auto tracks=timeline["tracks"].toObject()["children"].toArray(); QCOMPARE(tracks.size(),2);
+        const auto gap=tracks[1].toObject()["children"].toArray()[0].toObject(); QCOMPARE(gap["OTIO_SCHEMA"].toString(),"Gap.1");
+        QCOMPARE(gap["source_range"].toObject()["duration"].toObject()["value"].toDouble(),12.0);
+    }
+    void screenPermissionFailureKeepsSessionMetadata() {
+        QTemporaryDir dir; auto program=dir.filePath("screen-denied");
+        write(program,"#!/bin/sh\necho 'Screen sharing permission denied' >&2\nexit 2\n");
+        QVERIFY(QFile::setPermissions(program,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        SessionRecorder session(nullptr,program);
+        QJsonObject selected{{"directory",dir.path()},{"cameraEnabled",false},{"screenEnabled",true},{"microphoneEnabled",false},{"desktopEnabled",false},{"screenTarget","portal"}};
+        QVERIFY(session.start(selected)); QTRY_VERIFY(!session.busy());
+        QCOMPARE(session.status()["state"].toString(),"error");
+        QVERIFY(session.status()["error"].toString().contains("permission denied"));
+        QFile metadata(session.status()["output"].toString()+"/session.json"); QVERIFY(metadata.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(metadata.readAll()).object()["state"].toString(),"incomplete");
+    }
+    void cameraFailureStopsOtherSelectedWorkers() {
+        QTemporaryDir dir; const auto program = dir.filePath("fake-audio");
+        write(program, "#!/bin/sh\nwhile read -r line; do [ \"$line\" = q ] && exit 0; done\n");
+        QVERIFY(QFile::setPermissions(program, QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        SessionRecorder session(nullptr, "gpu-screen-recorder", program);
+        QSignalSpy camera(&session, &SessionRecorder::cameraStartRequested);
+        QJsonObject selected{{"directory",dir.path()},{"cameraEnabled",true},{"screenEnabled",false},
+            {"microphoneEnabled",true},{"audio","fake-mic"},{"desktopEnabled",true},{"desktopAudio","fake-monitor"}};
+        QVERIFY(session.start(selected)); QCOMPARE(camera.count(), 1);
+        session.cameraFinished(1, "Camera disconnected");
+        QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+        QCOMPARE(session.status()["state"].toString(), "error");
+        QVERIFY(session.status()["error"].toString().contains("Camera disconnected"));
+        QCOMPARE(session.status()["sources"].toList().size(), 3);
+    }
+    void validatesAndRecoversAnInterruptedTake() {
+        QTemporaryDir dir;
+        const QString video=dir.filePath("fixture.mkv");
+        QProcess ffmpeg; ffmpeg.start("ffmpeg",{"-v","error","-f","lavfi","-i","testsrc2=size=64x64:rate=10","-t","0.5","-c:v","libx264",video});
+        QVERIFY(ffmpeg.waitForFinished(5000)); QCOMPARE(ffmpeg.exitCode(),0);
+        QDir(dir.path()).mkdir("take-interrupted"); const QString take=dir.filePath("take-interrupted");
+        QVERIFY(QFile::copy(video,take+"/screen.partial.mkv"));
+        QJsonObject manifest{{"schemaVersion",1},{"state","recording"},{"ownerPid",0},{"sources",QJsonArray{QJsonObject{{"id","screen"},{"kind","Video"},{"state","recording"},{"file","screen.partial.mkv"},{"firstMonotonicUs",1000000}}}}};
+        write(take+"/session.json",QJsonDocument(manifest).toJson());
+        SessionRecorder recovery; QVERIFY(recovery.recover(dir.path())); QTRY_VERIFY(!recovery.busy());
+        QCOMPARE(recovery.status()["state"].toString(),"saved"); QVERIFY(QFileInfo::exists(take+"/screen.mkv"));
+        QVERIFY(QFileInfo::exists(take+"/timeline.otio"));
+    }
     void validatesModesAndPaths() {
         auto s = settings(); QString error;
         QVERIFY(Backend::validSettings(s, &error));
@@ -79,8 +162,11 @@ private slots:
         QVERIFY(args.contains("-n"));
         QCOMPARE(args[args.indexOf("-c:v") + 1], "copy");
         QVERIFY(args.contains("/tmp/my clips/a.mkv"));
-        QVERIFY(args.contains("studio mic;$(false)"));
-        QVERIFY(args.contains("pcm_s16le"));
+        QVERIFY(!args.contains("pulse"));
+        QVERIFY(args.contains("abs"));
+        const auto audio = SessionRecorder::audioArguments("studio mic;$(false)", "/tmp/audio.wav", true);
+        QVERIFY(audio.contains("studio mic;$(false)"));
+        QVERIFY(audio.contains("pcm_s16le"));
         QCOMPARE(args.count("/dev/video0"), 1);
         QCOMPARE(args[args.indexOf("-vf") + 1], "fps=30,scale=640:-2");
     }
@@ -143,7 +229,7 @@ private slots:
         QFile file(dir.filePath("settings.json")); QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).object()["audio"].toString(), "none");
         QVERIFY(!backend.setSetting("unknown", "value"));
-        QVERIFY(backend.setSetting("camera", "/dev/source-record-does-not-exist"));
+        QVERIFY(backend.setSetting("camera", "/dev/multitake-does-not-exist"));
         QVERIFY(!backend.start()); QCOMPARE(backend.status()["state"].toString(), "error");
         QVERIFY(!backend.status()["recording"].toBool());
     }
@@ -202,4 +288,4 @@ private slots:
 };
 
 QTEST_MAIN(RecorderTests)
-#include "source-record_tests.moc"
+#include "multitake_tests.moc"

@@ -8,6 +8,11 @@ function parseStatus(text) {
         return {
             running: value.running === true,
             recording: value.recording,
+            cameraEnabled: value.cameraEnabled !== false,
+            screenEnabled: value.screenEnabled === true,
+            microphoneEnabled: value.microphoneEnabled !== false,
+            desktopEnabled: value.desktopEnabled === true,
+            warning: String(value.warning || "").substring(0,2000),
             state: String(value.state || "idle").substring(0, 32),
             elapsed: Math.max(0, Math.min(359999, Number(value.elapsedSeconds) || 0)),
             peakDb: Math.max(-90, Math.min(0, Number.isFinite(Number(value.peakDb)) ? Number(value.peakDb) : -90)),
@@ -43,5 +48,14 @@ function parsePreview(text) {
         if (value.event !== "preview" || typeof value.jpeg !== "string" || value.jpeg.length > 1000000) return null
         if (!value.jpeg.startsWith('/9j/') || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.jpeg)) return null
         return "data:image/jpeg;base64," + value.jpeg
+    } catch (_) { return null }
+}
+
+function parseDesktopMeter(text) {
+    if (typeof text !== "string" || text.length > 512) return null
+    try {
+        const value = JSON.parse(text)
+        if (value.event !== "meter" || typeof value.desktopPeakDb !== "number" || !Number.isFinite(value.desktopPeakDb)) return null
+        return Math.max(-90, Math.min(0, value.desktopPeakDb))
     } catch (_) { return null }
 }

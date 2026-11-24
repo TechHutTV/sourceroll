@@ -1,25 +1,41 @@
 import QtQuick
-import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
-import qs.Ui
+import qs.Ui as Ui
 import "Model.js" as Model
 
-BarWidget {
+Ui.BarWidget {
     id: root
-    moduleName: "local.source-record"
+    moduleName: "local.multitake"
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
-    property bool opened: false
-    property var status: ({recording: false, state: "idle", elapsed: 0, peakDb: -90, error: "", output: ""})
+    readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+    readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
+    property var status: ({recording: false, state: "idle", cameraEnabled: true, screenEnabled: false, microphoneEnabled: true, desktopEnabled: false, elapsed: 0, peakDb: -90, error: "", output: ""})
     property bool unavailable: false
     property bool changing: false
     property real livePeak: -90
+    property real desktopPeak: -90
     property string previewSource: ""
-    function open() { opened = true; refresh() }
-    function close() { opened = false }
+    function open() { if (panelLoader.item) panelLoader.item.open() }
+    function close() { if (panelLoader.item) panelLoader.item.close() }
+    function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
+    function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
+    function injectPanel() {
+        if (!panelLoader.item) return
+        panelLoader.item.bar = root.bar
+        panelLoader.item.anchorItem = button
+        panelLoader.item.hostWidget = root
+    }
+    onBarChanged: injectPanel()
+    Loader {
+        id: panelLoader
+        active: true; visible: false
+        source: Qt.resolvedUrl("Panel.qml")
+        onLoaded: { root.injectPanel(); Qt.callLater(root.injectPanel) }
+    }
     onOpenedChanged: {
         if (opened) { action("ensure"); refresh() }
         else { previewSocket.connected = false; previewSource = "" }
@@ -28,13 +44,19 @@ BarWidget {
     function action(command) {
         if (control.running || changing) return
         changing = true
-        control.command = ["source-record", command, "--json"]
+        control.command = ["multitake", command, "--json"]
+        control.running = true
+    }
+    function setSource(key, enabled) {
+        if (control.running || root.status.recording) return
+        root.changing = true
+        control.command = ["multitake", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
         control.running = true
     }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     Socket {
         id: previewSocket
-        path: Quickshell.env("XDG_RUNTIME_DIR") + "/source-record.sock"
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/multitake.sock"
         onConnectionStateChanged: {
             if (connected) { write('{"command":"subscribe-preview"}\n'); flush() }
             else root.previewSource = ""
@@ -46,14 +68,14 @@ BarWidget {
     }
     Socket {
         id: meterSocket
-        path: Quickshell.env("XDG_RUNTIME_DIR") + "/source-record.sock"
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/multitake.sock"
         onConnectionStateChanged: {
             if (connected) { write('{"command":"subscribe-meter"}\n'); flush() }
-            else root.livePeak = -90
+            else { root.livePeak = -90; root.desktopPeak = -90 }
         }
         parser: SplitParser {
             splitMarker: "\n"
-            onRead: function(data) { const peak = Model.parseMeter(String(data)); if (peak !== null) root.livePeak = peak }
+            onRead: function(data) { const peak = Model.parseMeter(String(data)); if (peak !== null) root.livePeak = peak; const desktop = Model.parseDesktopMeter(String(data)); if (desktop !== null) root.desktopPeak = desktop }
         }
     }
     Timer {
@@ -67,7 +89,7 @@ BarWidget {
     Process {
         id: poll
         property bool received: false
-        command: ["source-record", "status", "--json"]
+        command: ["multitake", "status", "--json"]
         onRunningChanged: { if (running) received = false; else if (!received) root.unavailable = true }
         stdout: StdioCollector {
             onStreamFinished: {
@@ -75,6 +97,7 @@ BarWidget {
                 poll.received = true
                 if (value) {
                     root.status = value; root.unavailable = false
+                    if (!value.cameraEnabled) root.previewSource = ""
                     if (value.running && !meterSocket.connected) meterSocket.connected = true
                     if (!value.running && meterSocket.connected) meterSocket.connected = false
                     if (root.opened && value.running && !previewSocket.connected) previewSocket.connected = true
@@ -91,7 +114,7 @@ BarWidget {
         stdout: StdioCollector { onStreamFinished: { let value = Model.parseStatus(text); if (value) root.status = value } }
         onExited: function(code) { root.changing = false; if (code !== 0) root.unavailable = true; root.refresh() }
     }
-    BarIconButton {
+    Ui.BarIconButton {
         id: button
         anchors.fill: parent
         bar: root.bar
@@ -103,67 +126,7 @@ BarWidget {
         onPressed: function(b) {
             if (b === Qt.MiddleButton) root.action("toggle")
             else if (b === Qt.RightButton) root.action("open")
-            else root.opened ? root.close() : root.open()
-        }
-    }
-    KeyboardPanel {
-        anchorItem: button
-        bar: root.bar
-        owner: root
-        open: root.opened
-        contentWidth: Style.space(340)
-        contentHeight: content.implicitHeight + padding * 2
-        ColumnLayout {
-            id: content
-            width: parent.width
-            spacing: Style.space(12)
-            Text { textFormat: Text.PlainText; text: "Source Record"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: width * 9 / 16
-                color: Commons.Color.background
-                border.width: 1; border.color: Qt.alpha(Commons.Color.foreground, 0.2)
-                radius: Style.cornerRadius; clip: true
-                Image {
-                    anchors.fill: parent; anchors.margins: 1
-                    source: root.previewSource; cache: false
-                    asynchronous: true; retainWhileLoading: true
-                    fillMode: Image.PreserveAspectFit
-                }
-                Text {
-                    anchors.centerIn: parent; width: parent.width - 24
-                    visible: root.previewSource === ""; textFormat: Text.PlainText
-                    text: root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening")
-                    horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
-                    color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body
-                }
-            }
-            Text {
-                Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
-                text: root.unavailable ? strings.t("unavailable") : root.status.recording ? strings.t("recording").arg(Model.duration(root.status.elapsed)) : strings.t("idle")
-                color: root.status.recording ? Commons.Color.urgent : Commons.Color.foreground
-                font.family: Style.font.family; font.pixelSize: Style.font.body
-            }
-            Rectangle {
-                Layout.fillWidth: true; height: Style.space(5); color: Commons.Color.foreground; opacity: 0.8
-                Rectangle { width: parent.width * Math.max(0, (root.livePeak + 60) / 60); height: parent.height; color: root.livePeak > -3 ? Commons.Color.urgent : Commons.Color.accent }
-            }
-            Text {
-                Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
-                visible: root.status.error !== ""; text: root.status.error
-                color: Commons.Color.urgent; font.family: Style.font.family; font.pixelSize: Style.font.body
-            }
-            Text {
-                Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideMiddle
-                visible: root.status.output !== ""; text: root.status.output
-                color: Commons.Color.foreground; opacity: 0.6; font.family: Style.font.family; font.pixelSize: Style.font.body - 2
-            }
-            Button {
-                Layout.fillWidth: true; text: strings.t(root.status.recording ? "stop" : "start")
-                bordered: true; enabled: !root.changing && root.status.state !== "stopping"
-                onClicked: root.action(root.status.recording ? "stop" : "start")
-            }
-            Button { Layout.fillWidth: true; text: strings.t("open"); bordered: true; onClicked: { root.action("open"); root.close() } }
+            else root.toggle()
         }
     }
 }

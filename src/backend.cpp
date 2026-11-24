@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "session.h"
 
 #include <QDateTime>
 #include <QDesktopServices>
@@ -28,7 +29,7 @@ static QByteArray query(const QString &program, const QStringList &args) {
 }
 
 QString Backend::socketPath() {
-    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/source-record.sock";
+    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/multitake.sock";
 }
 
 QVariantList Backend::cameraModes(const QString &device) {
@@ -68,52 +69,80 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
     // If the app crashes, ask only its own child to finalize rather than orphaning capture.
     m_process.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
     m_configFile = configFile.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.json" : configFile;
+    QString migrationError;
+    if (configFile.isEmpty()) importLegacySettings(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/source-record/settings.json", m_configFile, &migrationError);
     QFile file(m_configFile);
     if (file.open(QIODevice::ReadOnly)) m_settings = QJsonDocument::fromJson(file.read(65536)).object();
-    if (!m_settings.contains("directory")) m_settings["directory"] = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation) + "/Source Record";
+    if (!m_settings.contains("directory")) m_settings["directory"] = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation) + "/Multitake";
     if (!m_settings.contains("encoding")) m_settings["encoding"] = "original";
+    if (!m_settings.contains("cameraEnabled")) m_settings["cameraEnabled"] = true;
+    if (!m_settings.contains("screenEnabled")) m_settings["screenEnabled"] = false;
+    if (!m_settings.contains("microphoneEnabled")) m_settings["microphoneEnabled"] = m_settings["audio"] != "none";
+    if (!m_settings.contains("desktopEnabled")) m_settings["desktopEnabled"] = false;
+    if (!m_settings.contains("screenTarget")) m_settings["screenTarget"] = "portal";
+    if (!m_settings.contains("screenFps")) m_settings["screenFps"] = 60;
+    m_session = new SessionRecorder(this);
+    connect(m_session, &SessionRecorder::changed, this, &Backend::statusChanged);
+    connect(m_session, &SessionRecorder::levels, this, [this](double mic, double desktop) { m_peak = mic; m_desktopPeak = desktop; emit peakChanged(); });
+    connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &file) {
+        m_output = file; m_recording = true; m_state = "starting"; m_frames.clear(); m_messages.clear(); m_log.clear();
+        m_process.start("ffmpeg", ffmpegArguments(m_settings, file, true)); m_watchdog.start();
+    });
+    connect(m_session, &SessionRecorder::cameraStopRequested, this, [this] {
+        if (m_process.state() != QProcess::NotRunning) { m_process.write("q\n");
+            QTimer::singleShot(8000, this, [this] { if (m_stopping || m_session->busy()) { if (m_process.state() != QProcess::NotRunning) m_process.kill(); } });
+        }
+    });
+    connect(m_session, &SessionRecorder::finished, this, [this] { m_recording = false; m_state = "idle"; if (!m_shuttingDown && (m_visible || m_previewClients)) m_restart.start(); });
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &Backend::consumeVideo);
     connect(&m_process, &QProcess::readyReadStandardError, this, &Backend::consumeMessages);
     connect(&m_process, &QProcess::finished, this, &Backend::finish);
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { m_recording = false; fail(tr("FFmpeg could not start: %1").arg(m_process.errorString())); }
+        if (error == QProcess::FailedToStart) { if (m_session->busy()) { m_session->cameraFinished(1, m_process.errorString()); return; } m_recording = false; fail(tr("FFmpeg could not start: %1").arg(m_process.errorString())); }
     });
     m_tick.setInterval(250);
     connect(&m_tick, &QTimer::timeout, this, [this] {
         if ((m_state == "recording" || m_state == "preview") && m_lastFrame.isValid() && m_lastFrame.elapsed() > 6000) {
-            stopProcess();
-            fail(tr("The camera stopped delivering frames. The clip was closed; check the device before recording again."));
+            if (m_session->busy()) m_session->stop(tr("The camera stopped delivering frames."));
+            else { stopProcess(); fail(tr("The camera stopped delivering frames. Check the device before recording again.")); }
         }
         emit statusChanged();
     });
     m_tick.start();
-    // Fast attack with a short release makes brief speech peaks visible without lagging the input.
-    m_meter.setInterval(40);
-    connect(&m_meter, &QTimer::timeout, this, [this] {
-        const double peak = qMax(m_pendingPeak, qMax(-90.0, m_peak - 20.0));
-        m_pendingPeak = -90;
-        if (peak != m_peak) { m_peak = peak; emit peakChanged(); }
-    });
-    m_meter.start();
     m_restart.setSingleShot(true); m_restart.setInterval(250);
-    connect(&m_restart, &QTimer::timeout, this, [this] { if ((m_visible || m_previewClients > 0) && !m_recording && m_process.state() == QProcess::NotRunning) launch(false); });
+    connect(&m_restart, &QTimer::timeout, this, [this] { if ((m_visible || m_previewClients > 0) && !m_session->busy()) launch(false); });
     m_watchdog.setInterval(10000);
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
         if (m_state == "starting" || m_state == "preview-starting") {
+            if (m_session->busy()) { m_session->stop(tr("The camera did not deliver its first frame.")); return; }
             stopProcess();
             fail(tr("The camera did not deliver a frame. Check that it is connected and not in use by another app."));
         }
     });
     refreshDevices();
+    if (!migrationError.isEmpty()) fail(migrationError);
 }
 
-Backend::~Backend() { m_shuttingDown = true; m_restart.stop(); stopProcess(); }
+Backend::~Backend() { shutdown(); }
+
+void Backend::shutdown() {
+    if (m_shuttingDown) return;
+    m_shuttingDown = true;
+    m_restart.stop(); m_tick.stop(); m_watchdog.stop();
+    m_session->stop(); stopProcess(); m_session->shutdown();
+}
 
 void Backend::refreshDevices() {
-    if (m_recording) return;
+    if (m_session && m_session->busy()) return;
     if (m_visible || m_previewClients > 0) stopProcess();
-    m_cameras.clear(); m_microphones.clear();
+    m_cameras.clear(); m_microphones.clear(); m_desktopSources.clear(); m_screens.clear();
+    m_screens.append(QVariantMap{{"id", "portal"}, {"label", tr("Choose screen or window when recording")}});
+    for (const auto &entry : QJsonDocument::fromJson(query("hyprctl", {"-j", "monitors"})).array()) {
+        const auto monitor = entry.toObject();
+        const auto name = monitor["name"].toString();
+        if (!name.isEmpty()) m_screens.append(QVariantMap{{"id", name}, {"label", name + " · " + tr("Direct monitor capture")}});
+    }
     QDir directory("/sys/class/video4linux");
     for (const auto &node : directory.entryList({"video*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
         const QString path = "/dev/" + node;
@@ -132,7 +161,7 @@ void Backend::refreshDevices() {
     const auto sources = QJsonDocument::fromJson(query("pactl", {"-f", "json", "list", "sources"})).array();
     for (const auto &source : sources) {
         const auto s = source.toObject();
-        if (s["name"].toString().endsWith(".monitor")) continue;
+        if (s["name"].toString().endsWith(".monitor")) { m_desktopSources.append(QVariantMap{{"id", s["name"].toString()}, {"label", s["description"].toString()}}); continue; }
         m_microphones.append(QVariantMap{{"id", s["name"].toString()}, {"label", s["description"].toString()}});
     }
     if (!m_settings.contains("camera") && !m_cameras.isEmpty()) m_settings["camera"] = m_cameras.first().toMap()["id"].toString();
@@ -148,6 +177,10 @@ void Backend::refreshDevices() {
         m_settings["audio"] = "default";
         for (const auto &mic : m_microphones) if (mic.toMap()["label"].toString().contains("Shure", Qt::CaseInsensitive)) m_settings["audio"] = mic.toMap()["id"].toString();
     }
+    if (!m_settings.contains("desktopAudio") && !m_desktopSources.isEmpty()) {
+        const auto preferred = QString::fromUtf8(query("pactl", {"get-default-sink"})).trimmed() + ".monitor";
+        m_settings["desktopAudio"] = preferred;
+    }
     emit devicesChanged(); emit settingsChanged();
     if (m_visible || m_previewClients > 0) { dismissError(); m_restart.start(); }
 }
@@ -159,6 +192,7 @@ QVariantList Backend::modes() const {
 
 bool Backend::validSettings(const QJsonObject &s, QString *error) {
     auto reject = [&](const QString &message) { if (error) *error = message; return false; };
+    if (!s.value("cameraEnabled").toBool(true)) return QDir::isAbsolutePath(s["directory"].toString()) && SessionRecorder::validateSources(s, error);
     if (!s["camera"].toString().startsWith("/dev/")) return reject(tr("Select a camera."));
     static const QRegularExpression mode("^[0-9]{2,5}x[0-9]{2,5}@[0-9]{1,8}/[0-9]{1,8}:(mjpeg|yuyv422|h264)$");
     if (!mode.match(s["mode"].toString()).hasMatch()) return reject(tr("Select a supported resolution and frame rate."));
@@ -175,17 +209,14 @@ QStringList Backend::ffmpegArguments(const QJsonObject &s, const QString &output
     const QString size = mode.section('@', 0, 0), rate = mode.section('@', 1).section(':', 0, 0), format = mode.section(':', 1);
     QStringList args{"-hide_banner", "-nostats", "-loglevel", "info", "-stats_period", "0.5", "-progress", "pipe:2", "-n",
         "-thread_queue_size", "512", "-f", "v4l2", "-input_format", format, "-video_size", size, "-framerate", rate, "-i", s["camera"].toString()};
-    bool audio = s["audio"] != "none";
-    if (audio) args << "-thread_queue_size" << "512" << "-f" << "pulse" << "-fragment_size" << "4096" << "-i" << s["audio"].toString();
-    const QString meter = "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level";
     if (recording) {
+        args.insert(1, "-debug_ts");
+        args.insert(args.indexOf("-f"), "-timestamps");
+        args.insert(args.indexOf("-timestamps") + 1, "abs");
         args << "-map" << "0:v:0";
         if (s["encoding"] == "original" && (format == "mjpeg" || format == "h264")) args << "-c:v" << "copy";
         else args << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << "18" << "-pix_fmt" << "yuv420p";
-        if (audio) args << "-map" << "1:a:0" << "-af" << meter << "-c:a" << "pcm_s16le";
-        args << "-f" << "matroska" << output;
-    } else if (audio) {
-        args << "-map" << "1:a:0" << "-af" << meter << "-f" << "null" << "/dev/null";
+        args << "-an" << "-f" << "matroska" << output;
     }
     // One input feeds both the untouched recording and a small monitoring image.
     args << "-map" << "0:v:0" << "-an" << "-vf" << "fps=30,scale=640:-2" << "-c:v" << "mjpeg" << "-q:v" << "5" << "-threads" << "2" << "-f" << "image2pipe" << "pipe:1";
@@ -193,12 +224,18 @@ QStringList Backend::ffmpegArguments(const QJsonObject &s, const QString &output
 }
 
 QVariantMap Backend::status() const {
-    const bool busy = m_state == "recording" || m_state == "starting" || m_state == "stopping";
-    const qint64 elapsed = busy && m_elapsed.isValid() ? m_elapsed.elapsed() : m_recordedMs;
-    const QString file = busy ? m_output : m_lastOutput;
-    return {{"running", true}, {"recording", m_recording}, {"state", m_state}, {"error", m_error}, {"output", file},
-        {"elapsedSeconds", elapsed / 1000.0}, {"bytes", double(QFileInfo(file).size())}, {"peakDb", m_peak},
-        {"preview", m_process.state() != QProcess::NotRunning}, {"camera", m_settings["camera"].toString()}, {"audio", m_settings["audio"].toString()}};
+    QVariantMap result = m_session ? m_session->status() : QVariantMap();
+    const bool busy = m_session && m_session->busy();
+    const bool hasSession = !result.value("output").toString().isEmpty();
+    if (!busy && !hasSession) { result["state"] = m_state; result["error"] = m_error; }
+    if (!busy && !m_error.isEmpty()) { result["state"] = "error"; result["error"] = m_error; }
+    result["running"] = true; result["recording"] = busy;
+    result["preview"] = m_process.state() != QProcess::NotRunning;
+    result["peakDb"] = m_peak; result["desktopPeakDb"] = m_desktopPeak;
+    result["camera"] = m_settings["camera"]; result["audio"] = m_settings["audio"];
+    result["cameraEnabled"] = m_settings["cameraEnabled"]; result["screenEnabled"] = m_settings["screenEnabled"];
+    result["microphoneEnabled"] = m_settings["microphoneEnabled"]; result["desktopEnabled"] = m_settings["desktopEnabled"];
+    return result;
 }
 
 bool Backend::saveSettings() {
@@ -211,10 +248,13 @@ bool Backend::saveSettings() {
 }
 
 bool Backend::setSetting(const QString &key, const QVariant &value) {
-    if (m_recording || m_state == "stopping") return false;
-    if (!QStringList{"camera", "mode", "audio", "directory", "encoding"}.contains(key)) return false;
+    if (m_shuttingDown || m_session->busy() || m_state == "stopping") return false;
+    if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "desktopAudio"}.contains(key)) return false;
     stopProcess();
-    m_settings[key] = value.toString().left(4096);
+    m_session->previewAudio(m_settings, false);
+    if (key.endsWith("Enabled")) m_settings[key] = value.toBool();
+    else if (key == "screenFps") m_settings[key] = qBound(15, value.toInt(), 120);
+    else m_settings[key] = value.toString().left(4096);
     if (key == "camera") m_settings["mode"] = modes().isEmpty() ? "" : modes().first().toMap()["id"].toString();
     emit settingsChanged();
     const bool saved = saveSettings();
@@ -226,36 +266,37 @@ void Backend::fail(const QString &message) { m_error = message; m_state = "error
 void Backend::dismissError() { m_error.clear(); if (!m_recording) m_state = "idle"; emit statusChanged(); }
 
 void Backend::launch(bool recording) {
+    Q_UNUSED(recording)
     m_restart.stop();
+    if (m_session->busy()) return;
+    m_session->previewAudio(m_settings, true);
+    if (!m_settings["cameraEnabled"].toBool(true)) { m_state = "idle"; emit statusChanged(); return; }
     QString error;
     if (!validSettings(m_settings, &error)) { fail(error); return; }
-    if (QStandardPaths::findExecutable("ffmpeg").isEmpty()) { fail(tr("FFmpeg is not installed.")); return; }
-    bool supported = false;
-    for (const auto &mode : modes()) if (mode.toMap()["id"].toString() == m_settings["mode"].toString()) supported = true;
-    if (!supported) { fail(tr("The selected camera mode is unavailable. Refresh devices and select a supported mode.")); return; }
-    if (recording) {
-        const QString dir = m_settings["directory"].toString();
-        if (!QDir().mkpath(dir)) { fail(tr("Could not create the output folder.")); return; }
-        QStorageInfo storage(dir);
-        if (storage.isValid() && storage.bytesAvailable() < 512LL * 1024 * 1024) { fail(tr("Less than 512 MiB is free in the output folder.")); return; }
-        m_output = QDir(dir).filePath("camera-" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz") + ".mkv");
-        if (!saveSettings()) return;
-    }
-    m_frames.clear(); m_messages.clear(); m_log.clear(); m_peak = -90; m_pendingPeak = -90; m_error.clear(); emit peakChanged();
-    m_recording = recording; m_recordedMs = 0;
-    m_state = recording ? "starting" : "preview-starting";
-    if (recording) m_elapsed.start();
-    m_process.start("ffmpeg", ffmpegArguments(m_settings, m_output, recording));
+    if (m_process.state() != QProcess::NotRunning) return;
+    m_frames.clear(); m_messages.clear(); m_log.clear(); m_error.clear(); m_frameNumber = 0; m_image = QImage(); m_previewJpeg.clear(); emit frameReady();
+    m_recording = false; m_state = "preview-starting";
+    m_process.start("ffmpeg", ffmpegArguments(m_settings, {}, false));
     m_watchdog.start(); emit statusChanged();
 }
 
 bool Backend::start() {
-    if (m_recording || m_state == "stopping") return false;
-    stopProcess(); launch(true); return m_recording;
+    if (m_shuttingDown || m_session->busy()) return false;
+    QString error;
+    if (!SessionRecorder::validateSources(m_settings, &error) || !validSettings(m_settings, &error)) { fail(error); return false; }
+    if (m_settings["cameraEnabled"].toBool(true)) {
+        bool supported = false;
+        for (const auto &mode : modes()) if (mode.toMap()["id"].toString() == m_settings["mode"].toString()) supported = true;
+        if (!supported) { fail(tr("The selected camera mode is unavailable.")); return false; }
+    }
+    if (!saveSettings()) return false;
+    stopProcess(); m_error.clear();
+    return m_session->start(m_settings);
 }
 
 void Backend::stopProcess() {
     m_watchdog.stop(); m_restart.stop();
+    if (!m_session->busy()) m_session->previewAudio(m_settings, false);
     if (m_process.state() == QProcess::NotRunning) return;
     // FFmpeg's own quit command lets it write the Matroska index and trailers.
     m_stopping = true;
@@ -268,29 +309,22 @@ void Backend::stopProcess() {
     m_stopping = false;
 }
 
-void Backend::stop() {
-    if (!m_recording) return;
-    stopProcess();
-    if ((m_visible || m_previewClients > 0) && m_error.isEmpty()) m_restart.start();
-}
-
-void Backend::toggle() { if (m_recording) stop(); else start(); }
+void Backend::stop() { if (m_session->busy()) m_session->stop(); }
+void Backend::toggle() { if (m_session->busy()) stop(); else start(); }
 
 void Backend::setWindowVisible(bool visible) {
+    if (m_shuttingDown) return;
     m_visible = visible;
-    if (!visible && m_previewClients == 0 && !m_recording) stopProcess();
-    else if ((visible || m_previewClients > 0) && m_process.state() == QProcess::NotRunning && m_error.isEmpty()) m_restart.start();
+    if (m_session->busy()) return;
+    if (!visible && m_previewClients == 0) stopProcess();
+    else if (visible || m_previewClients > 0) m_restart.start();
 }
-
-void Backend::addPreviewClient() {
-    ++m_previewClients;
-    if (!m_recording && m_process.state() == QProcess::NotRunning && m_error.isEmpty()) m_restart.start();
-}
-
+void Backend::addPreviewClient() { ++m_previewClients; if (!m_session->busy()) m_restart.start(); }
 void Backend::removePreviewClient() {
     m_previewClients = qMax(0, m_previewClients - 1);
-    if (m_previewClients == 0 && !m_visible && !m_recording) stopProcess();
+    if (!m_previewClients && !m_visible && !m_session->busy()) stopProcess();
 }
+bool Backend::recoverSession() { if (m_session->busy()) return false; stopProcess(); return m_session->recover(m_settings["directory"].toString()); }
 
 void Backend::openFolder() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings["directory"].toString())); }
 
@@ -321,8 +355,7 @@ void Backend::consumeMessages() {
     for (;;) {
         auto end = m_messages.indexOf('\n'); if (end < 0) break;
         auto line = m_messages.left(end).trimmed(); m_messages.remove(0, end + 1);
-        const auto peak = parsePeak(line);
-        if (peak) m_pendingPeak = qMax(m_pendingPeak, *peak);
+        if (m_recording) { const auto stamp = SessionRecorder::packetTimestamp(line); if (stamp) m_session->cameraTimestamp(stamp); }
     }
     if (m_messages.size() > 65536) m_messages.clear();
 }
@@ -340,16 +373,9 @@ std::optional<double> Backend::parsePeak(const QByteArray &line) {
 
 void Backend::finish(int code, QProcess::ExitStatus exitStatus) {
     m_watchdog.stop(); consumeMessages();
-    const bool wasRecording = m_recording;
-    if (wasRecording) {
-        m_recordedMs = m_elapsed.elapsed();
-        if (QFileInfo(m_output).size() > 0) m_lastOutput = m_output;
-    }
-    m_recording = false; m_peak = -90; m_pendingPeak = -90; m_state = "idle"; emit peakChanged();
-    if (!m_shuttingDown && (code != 0 || exitStatus != QProcess::NormalExit))
-        fail(tr("Capture failed. Check the camera and microphone.\n%1").arg(QString::fromUtf8(m_log.right(1800))));
-    else if (wasRecording && QFileInfo(m_output).size() == 0)
-        fail(tr("No video was saved. Check the output folder and camera."));
+    const bool wasRecording = m_recording; m_recording = false; m_state = "idle";
+    if (wasRecording || m_session->busy()) { m_session->cameraFinished(code, QString::fromUtf8(m_log.right(1000))); emit statusChanged(); return; }
+    if (!m_shuttingDown && !m_stopping && (code != 0 || exitStatus != QProcess::NormalExit)) fail(tr("Camera preview failed. %1").arg(QString::fromUtf8(m_log.right(1400))));
     emit statusChanged();
 }
 
@@ -359,6 +385,7 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     if (command == "start") ok = start();
     else if (command == "stop") stop();
     else if (command == "toggle") toggle();
+    else if (command == "recover") ok = recoverSession();
     else if (command == "open") emit openRequested();
     else if (command == "configure") {
         const auto options = request["settings"].toObject();
@@ -367,6 +394,22 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     QJsonObject result = QJsonObject::fromVariantMap(status());
     result["ok"] = ok;
     if (command == "settings" || command == "configure") result["settings"] = m_settings;
-    if (command == "devices") { result["cameras"] = QJsonArray::fromVariantList(m_cameras); result["microphones"] = QJsonArray::fromVariantList(m_microphones); }
+    if (command == "devices") { result["cameras"] = QJsonArray::fromVariantList(m_cameras); result["microphones"] = QJsonArray::fromVariantList(m_microphones); result["screens"] = QJsonArray::fromVariantList(m_screens); result["desktopSources"] = QJsonArray::fromVariantList(m_desktopSources); }
     return result;
+}
+
+bool Backend::importLegacySettings(const QString &legacy, const QString &target, QString *error) {
+    if (QFileInfo::exists(target) || !QFileInfo::exists(legacy)) return true;
+    QFile input(legacy);
+    auto fail = [&](const QString &message) { if (error) *error = message; return false; };
+    if (!input.open(QIODevice::ReadOnly)) return fail(tr("Could not read previous settings."));
+    QJsonParseError parseError;
+    const auto data = input.read(65537);
+    const auto doc = QJsonDocument::fromJson(data, &parseError);
+    if (data.size() > 65536 || parseError.error != QJsonParseError::NoError || !doc.isObject() || doc.object().isEmpty()) return fail(tr("Previous settings are invalid; they were left unchanged."));
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail(tr("Could not create the Multitake settings folder."));
+    QSaveFile output(target);
+    if (!output.open(QIODevice::WriteOnly) || output.write(doc.toJson()) < 0) return fail(tr("Could not import previous settings."));
+    if (QFileInfo::exists(target)) { output.cancelWriting(); return true; }
+    return output.commit() || fail(tr("Could not save imported settings."));
 }

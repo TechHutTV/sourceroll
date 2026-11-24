@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Multitake
+Name[da]=Multitake
+Comment=Record screen, camera and audio as separate takes
+Comment[da]=Optag skærm, kamera og lyd som separate filer
+Exec=multitake open
+Icon=multitake
+Terminal=false
+Categories=AudioVideo;Recorder;
+Keywords=screen;camera;webcam;audio;record;capture;multitrack;
+StartupWMClass=multitake

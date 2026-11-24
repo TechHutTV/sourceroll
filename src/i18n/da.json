@@ -1,5 +1,5 @@
 {
-  "Source Record": "Source Record",
+  "Multitake": "Multitake",
   "Recording": "Optager",
   "Starting…": "Starter…",
   "Saving…": "Gemmer…",
@@ -38,7 +38,22 @@
   "Keyboard shortcuts": "Tastaturgenveje",
   "Space — Start / stop recording\nEsc — Hide window, keep recording\nQ — Quit (confirm first)\n? — Show shortcuts\n\nBar: click to open controls, middle-click to record / stop.": "Mellemrum — Start / stop optagelse\nEsc — Skjul vinduet, fortsæt optagelse\nQ — Afslut (bekræft først)\n? — Vis genveje\n\nBjælke: klik åbner styring, midterklik optager / stopper.",
   "Stop recording and quit?": "Stop optagelsen og afslut?",
-  "Quit Source Record?": "Afslut Source Record?",
+  "Quit Multitake?": "Afslut Multitake?",
   "The current clip will be saved before quitting.": "Det aktuelle klip gemmes før afslutning.",
-  "The bar can start the recorder again.": "Bjælken kan starte optageren igen."
+  "The bar can start the recorder again.": "Bjælken kan starte optageren igen.",
+  "Screen": "Skærm",
+  "Microphone": "Mikrofon",
+  "Desktop audio": "Systemlyd",
+  "Separate files · one take": "Separate filer · én optagelse",
+  "Sources": "Kilder",
+  "Camera source is off": "Kamerakilden er slået fra",
+  "Screen or window": "Skærm eller vindue",
+  "Desktop audio source": "Kilde til systemlyd",
+  "Each enabled source is saved separately. Session timing and an editing timeline are included.": "Hver valgt kilde gemmes separat. Tidsdata og en tidslinje til redigering medfølger.",
+  "Recover interrupted take": "Gendan afbrudt optagelse",
+  "Record enabled sources": "Optag valgte kilder",
+  "Desktop audio level": "Systemlydniveau",
+  "Choose a screen or window…": "Vælg en skærm eller et vindue…",
+  "Checking saved files…": "Kontrollerer gemte filer…",
+  "Session saved": "Optagelse gemt"
 }

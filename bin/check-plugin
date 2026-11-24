@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SHELL_ROOT="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
+omarchy plugin validate "$ROOT/plugin"
+mkdir -p "$ROOT/build/qml-imports"
+ln -sfn "$SHELL_ROOT" "$ROOT/build/qml-imports/qs"
+# The shell exposes theme tokens and loaded panel methods dynamically.
+# Keep these informational, while import, syntax, and other checks remain strict.
+/usr/lib/qt6/bin/qmllint --missing-property info -I "$ROOT/build/qml-imports" \
+    "$ROOT/plugin/BarWidget.qml" "$ROOT/plugin/Panel.qml"

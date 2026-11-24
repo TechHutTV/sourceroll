@@ -1,11 +1,18 @@
 {
-  "bar.tooltip": "Source Record · click for controls · middle-click to record / stop · right-click for preview",
-  "unavailable": "Recorder unavailable. Open Source Record to check it.",
+  "bar.tooltip": "Multitake · click for controls · middle-click to record / stop · right-click for preview",
+  "unavailable": "Recorder unavailable. Open Multitake to check it.",
   "recording": "Recording · %1",
-  "idle": "Camera recorder ready",
-  "start": "Start camera recording",
+  "idle": "Ready to record",
+  "start": "Record enabled sources",
   "stop": "Stop and save",
   "open": "Open preview and settings",
   "preview.opening": "Opening camera…",
-  "preview.unavailable": "Camera unavailable"
+  "preview.unavailable": "Camera unavailable",
+  "preview.off": "Camera source is off",
+  "source.screen": "Screen",
+  "source.camera": "Camera",
+  "source.microphone": "Microphone",
+  "source.desktop": "Desktop audio",
+  "choose.screen": "Choose a screen or window…",
+  "validating": "Checking saved files…"
 }

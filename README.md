@@ -1,71 +1,112 @@
-![Source Record](docs/screenshot.png)
+![Multitake](docs/screenshot.png)
 
-# Source Record
+# Multitake
 
-A small camera recorder for Omarchy, powered by FFmpeg. Record a camera and selected microphone to timestamped MKV files, with a live preview, microphone peak meter, elapsed time, and file size. A bar widget provides live preview and recording controls.
+A focused recorder for Omarchy. Select a screen or window, camera, microphone, and desktop audio, then record the enabled sources together. Each source gets its own file for editing afterward. The app and bar widget provide camera preview, audio meters, source switches, recording status, and one start/stop control.
 
-Original mode preserves supported MJPEG and H.264 camera streams without re-encoding. The smaller H.264 option uses CRF 18; raw YUYV modes also use H.264. Audio is saved as uncompressed PCM. Available capture resolutions and frame rates come from the selected camera. The app and widget share a 640-pixel-wide preview at up to 30 fps; preview scaling does not resize the saved recording.
+## Record a take
 
-File size depends on the camera format, scene, and encoding settings. Original MJPEG can produce large files; choose H.264 for smaller recordings.
+Search **Multitake** in the app launcher (Super + Space). Enable the sources you need and select their devices. Screen capture defaults to the native Wayland screen/window chooser; choose the source when recording starts. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
 
-## Use
+The system chooser uses still thumbnails. Multitake keeps the system picker unchanged; it does not provide live display thumbnails or a live screen preview in this version.
 
-Search **Source Record** in the app launcher (Super + Space). Select a camera, supported resolution/frame rate, microphone (or No audio), encoding and output folder. Review the selected camera mode and audio source before recording. A configured missing device causes a visible error instead of silently switching inputs. No sound is played through the speakers.
+The app shows preparation, screen-selection, recording, stopping, and file-validation states. A take is reported as saved only after its files pass validation. Settings are locked during capture and finalization. Turning a source off excludes it from the take; it does not mute or modify the system device.
 
-Click the bar camera icon for a live camera preview, microphone meter, and start/stop controls. The popup uses the recorder’s existing 30 fps preview feed; opening it never starts a second camera capture. With no recording active and the app hidden, closing the popup releases the camera. Middle-click toggles recording; right-click opens the app. Closing or hiding the window keeps an active recording running. When idle, hiding releases the camera and microphone. The bar shows elapsed time and turns urgent while recording. Other applications may need to release the camera before capture can start.
+A take folder contains the selected outputs:
 
-The meter shows recent peak dBFS, not loudness. It updates on a separate 40 ms timer with a fast attack and brief release, and the bar receives readings over a persistent user-only local socket. PulseAudio capture uses a small requested buffer. Keep speech below 0 dBFS to avoid clipping. MKV tolerates interruptions better than a conventional MP4, but always stop normally to finalize the index. Do not unplug the camera during a take.
+```text
+take-YYYY-MM-DD_HH-mm-ss-mmm/
+  screen.mkv
+  camera.mkv
+  microphone.wav
+  desktop.wav
+  session.json
+  timeline.otio
+```
 
-The full app follows Omarchy's `colors.toml` and `shell.toml` live: background, foreground, secondary text, accent, error color, light/dark mode, control fills and borders, font size, and control height. Flat controls use the system monospace font and Hyprland rounding. Switching themes replaces the palette without restarting or interrupting recording.
+Only enabled sources produce files. Files have `.partial` in their names until validated. Screen and camera video remain separate. Microphone and desktop audio are separate uncompressed PCM WAV files, with RF64 support for long takes.
+
+Original camera mode preserves supported MJPEG/H.264 streams without re-encoding. H.264 mode produces smaller files; raw YUYV cameras also use H.264. Available camera resolutions and rates come from the device. Screen capture uses GPU Screen Recorder with H.264, a selectable frame rate, and CPU fallback when hardware encoding is unavailable. Original MJPEG can produce large files; watch disk space.
+
+## Timing and editing
+
+Source preparation and permission selection take different amounts of time. Multitake records the camera and audio device timestamps and the screen recorder's first-frame timestamp, maps them to a common monotonic clock, and saves each source's start offset in `session.json`. Files use local media timestamps, and `timeline.otio` places validated clips on separate tracks with the measured offsets.
+
+OpenTimelineIO support varies by editor. The JSON manifest remains available for editors or scripts that do not import OTIO. These offsets describe capture timing; camera processing and microphone DSP can introduce physical latency that needs calibration or adjustment in an editor. Use a visible/audible synchronization cue when frame-accurate alignment matters.
+
+A system clock jump is reported as a timing warning. If timing metadata is missing after an interruption, files are preserved and manual alignment is requested rather than inventing offsets.
+
+## Preview and widget
+
+Click the bar icon for camera preview, source switches, microphone level, and recording controls. Middle-click toggles recording; right-click opens the full app. The app and widget share one camera capture and a 640-pixel-wide preview at up to 30 fps. Preview scaling does not resize the saved video. The widget retains the previous frame while the next one loads.
+
+Closing the main window hides it and keeps an active take recording. When idle, closing the last preview viewer releases capture devices. Screen/window permission is requested only when starting an enabled screen source. The microphone and desktop meters show recent peak dBFS, update independently of general status, and do not play input audio through the speakers. Keep peaks below 0 dBFS.
+
+The app follows Omarchy's palette and control tokens live, including light/dark colors, accent, borders, font size, and Hyprland rounding. Switching themes does not restart recording.
 
 | Shortcut | Action |
 | --- | --- |
-| Space | Start / stop and save |
+| Space | Record enabled sources / stop and save |
 | Esc | Hide to bar; recording continues |
-| Q | Quit after confirmation; save active recording |
+| Q | Confirm quit; stop and save active sources |
 | ? | Show shortcuts |
+
+## Failure handling and recovery
+
+If an enabled source exits or the camera stops delivering frames, all sources are asked to stop. Low disk space also stops the take. Workers are tracked individually; unrelated recorder processes are never killed. Partial files and metadata are preserved when a source fails. Source files are validated with ffprobe before being renamed, and the take reports incomplete if validation fails.
+
+After an interrupted run, choose **Recover interrupted take** in the app or run `multitake recover --json`. Recovery checks the most recent incomplete take in the configured output folder, preserves unreadable partial files, and rebuilds timing/timeline data when enough metadata exists. It never overwrites a final file. A normal quit waits for capture finalization; after a crash, parent-death signals ask workers to finalize and recovery handles the remaining metadata.
 
 ## Build and install
 
-Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, FFmpeg and pactl. Video discovery uses the Linux V4L2 API.
+Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, Python 3, FFmpeg/ffprobe, pactl, GPU Screen Recorder, and a working Wayland screen-cast portal.
 
 ```sh
 bin/build
 bin/test
+bin/check-plugin
 bin/install
 ```
 
-`bin/install` builds an Arch package and uses normal sudo authentication, then installs/enables the user-owned plugin. Nothing under /usr/share/omarchy is edited. The source of the bar plugin lives in `plugin/`; run `bin/install-plugin` after editing it. Installation backs up an existing plugin directory before replacing it and restarts the shell to clear cached QML. The recorder runs separately and keeps active recordings running. The bar configuration is managed through `omarchy plugin enable`.
+`bin/install` builds an Arch package and installs the user widget. Password entry uses the native terminal prompt. Plugin installation backs up previous files and bar configuration, then restarts the shell to clear cached QML. The recorder runs separately, so a shell restart keeps active takes recording. No files under `/usr/share/omarchy` are edited.
 
-Settings are saved atomically in `~/.config/source-record/settings.json`. Recordings default to the configured Videos folder under `Source Record`. One per-user resident app owns the FFmpeg child and listens on a user-only local socket; a lock prevents duplicate recorders. There is no network service, account, telemetry, or automatic recording at login.
+Settings are saved atomically in `~/.config/multitake/settings.json`. New installations default to `~/Videos/Multitake`. Existing Source Record settings are imported once when no Multitake settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
+
+There is one resident app per user, protected by a lock and a user-only local socket. The widget starts it in the background as needed. There is no network service, account, telemetry, or automatic recording at login.
+
+The user plugin lives in `plugin/`, with its own [installation, dependency, and removal notes](plugin/README.md). It uses Omarchy's bar-widget contract and standard panel lifecycle. `local.multitake` is a local development ID. Marketplace submission would require a permanent namespaced ID and a public plugin repository with `manifest.json` at its root; this app repository is not currently a marketplace submission.
+
+## Command line
 
 ```sh
-source-record open
-source-record devices --json
-source-record settings --json
-source-record status --json
-source-record start --json
-source-record stop --json
-source-record configure --audio none --encoding h264 --json
-source-record check --json
-source-record skill install
+multitake open
+multitake devices --json
+multitake settings --json
+multitake configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json
+multitake configure --screen-target portal --screen-fps 60 --json
+multitake status --json
+multitake start --json
+multitake stop --json
+multitake recover --json
+multitake check --json
+multitake skill install
 ```
 
-Use the device and mode IDs returned by `devices`. A start response means the process is starting; check status for `recording` or `error`. Stop waits for FFmpeg to finalize and reports its saved output. Settings cannot change while recording. CLI commands do not require a display client; starting the resident recorder needs a running desktop session. The bundled agent skill can be installed explicitly with the command above.
+Use device and mode IDs returned by `devices`. `start` acknowledges preparation; wait for `state: recording` before assuming every source is ready. `stop` begins coordinated stopping and validation; wait for `recording: false` and inspect `state`, `error`, and `sources` for the result. Screen selection may require an interactive native picker. CLI inspection needs no display client, but capture needs a running desktop session.
 
 ## Remove
 
-Stop the camera recording first, quit the app with Q, then:
+Stop the take and quit the app with Q, then:
 
 ```sh
-omarchy plugin disable local.source-record
-sudo pacman -R source-record
+omarchy plugin disable local.multitake
+sudo pacman -R multitake
 ```
 
-Remove `~/.config/omarchy/plugins/local.source-record` if no longer wanted. Settings and recordings are kept. No existing screen-recording shortcuts are changed.
+Remove `~/.config/omarchy/plugins/local.multitake` if no longer wanted. Settings, recording folders, and migration backups are kept.
 
-## Scope
+## Current scope
 
-Discrete V4L2 MJPEG, H.264 and YUYV camera modes are supported. Other formats and stepwise-only modes are not listed. The original stream option preserves the camera's USB output; it cannot recover detail the camera discarded internally. Monitoring is visual and metered; headphone monitoring and synchronization with other recorders are outside this version.
+One screen/window, one V4L2 camera, one microphone, and one desktop audio source can be selected per take. Discrete MJPEG, H.264, and YUYV camera modes are supported. Arbitrary camera counts, live compositing, streaming, transitions, and headphone monitoring are outside this version.
 
-MIT licensed. Theme and language integration follow Omarchy's Omacut/Monologue templates, with attribution in LICENSE. English and Danish catalogs are included with live language/theme switching and English fallback.
+MIT licensed. Theme and language integration follow Omarchy's Omacut/Monologue templates, with attribution in LICENSE. English and Danish catalogs are included, with live theme/language changes and English fallback.

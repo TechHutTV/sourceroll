@@ -1,10 +1,10 @@
-pkgname=source-record
-pkgver=0.3.0
+pkgname=multitake
+pkgver=0.4.0
 pkgrel=1
-pkgdesc='Independent FFmpeg camera recorder with live preview and Omarchy bar controls'
+pkgdesc='Record screen, camera, microphone and desktop audio as separate synchronized takes'
 arch=('x86_64' 'aarch64')
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'ffmpeg' 'libpulse')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'ffmpeg' 'libpulse' 'gpu-screen-recorder' 'xdg-desktop-portal')
 makedepends=('gcc' 'make')
 source=()
 sha256sums=()
@@ -16,11 +16,11 @@ build() {
 
 package() {
   cd "$startdir/.."
-  install -Dm755 build/source-record "$pkgdir/usr/bin/source-record"
+  install -Dm755 build/multitake "$pkgdir/usr/bin/multitake"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$startdir/source-record.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/source-record.svg"
-  install -Dm644 "$startdir/source-record.desktop" "$pkgdir/usr/share/applications/source-record.desktop"
-  install -Dm644 README.md "$pkgdir/usr/share/doc/source-record/README.md"
-  install -d "$pkgdir/usr/share/source-record/plugin"
-  cp -R plugin/. "$pkgdir/usr/share/source-record/plugin/"
+  install -Dm644 "$startdir/multitake.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/multitake.svg"
+  install -Dm644 "$startdir/multitake.desktop" "$pkgdir/usr/share/applications/multitake.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/multitake/README.md"
+  install -d "$pkgdir/usr/share/multitake/plugin"
+  cp -R plugin/. "$pkgdir/usr/share/multitake/plugin/"
 }
