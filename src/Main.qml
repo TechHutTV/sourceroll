@@ -57,7 +57,6 @@ ApplicationWindow {
                 ColumnLayout {
                     spacing: 3
                     PlainLabel { text: qsTr("Source Record"); font.pixelSize: 25; font.weight: Font.DemiBold }
-                    Caption { text: qsTr("Your camera, saved separately. OBS stays independent.") }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle { width: 8; height: 8; radius: 4; color: win.state.recording ? "#ff606a" : theme.accent }
