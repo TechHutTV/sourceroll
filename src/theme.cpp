@@ -11,6 +11,31 @@
 #include <QStandardPaths>
 #include <cmath>
 
+// Only scalar theme tokens are needed here; ignore comments, arrays and executable content.
+static QVariantMap readTokens(const QString &path) {
+    QVariantMap values;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return values;
+    QString section;
+    const QRegularExpression entry(R"re(^\s*([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([0-9.]+|true|false))\s*(?:#.*)?$)re");
+    for (auto line : QString::fromUtf8(file.read(1024 * 1024)).split('\n')) {
+        line = line.trimmed();
+        if (line.startsWith('[') && line.endsWith(']')) { section = line.mid(1, line.size() - 2); continue; }
+        const auto match = entry.match(line);
+        if (!match.hasMatch()) continue;
+        const auto value = match.captured(2).isNull() ? (match.captured(3).isNull() ? match.captured(4) : match.captured(3)) : match.captured(2);
+        values[(section.isEmpty() ? QString() : section + '.') + match.captured(1)] = value;
+    }
+    return values;
+}
+
+static QColor tokenColor(const QVariantMap &values, const QString &key, const QColor &fallback) {
+    const QColor value(values.value(key).toString());
+    return value.isValid() ? value : fallback;
+}
+
+static QColor withAlpha(QColor color, double alpha) { color.setAlphaF(qBound(0.0, alpha, 1.0)); return color; }
+
 Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl)
     : QObject(parent),
       m_directory(directory.isEmpty() ? QDir::homePath() + "/.local/state/omarchy/current" : directory) {
@@ -94,15 +119,48 @@ void Theme::reload() {
     while (!QFileInfo::exists(ancestor) && ancestor != "/")
         ancestor = QFileInfo(ancestor).absolutePath();
     QStringList candidates{ancestor, QFileInfo(ancestor).absolutePath(), m_directory,
-                           m_directory + "/theme", m_directory + "/theme/colors.toml"};
+                           m_directory + "/theme", m_directory + "/theme/colors.toml", m_directory + "/theme/shell.toml"};
     candidates.removeDuplicates();
     for (const auto &path : candidates)
         if (QFileInfo::exists(path))
             m_watcher.addPath(path);
 
-    const auto accent = readAccent(m_directory + "/theme/colors.toml");
-    if (accent != m_accent) {
-        m_accent = accent;
+    const auto palette = readTokens(m_directory + "/theme/colors.toml");
+    const auto shell = readTokens(m_directory + "/theme/shell.toml");
+    const bool dark = palette.value("mode", "dark").toString() != "light";
+    const QColor background = tokenColor(palette, "background", dark ? QColor("#121212") : QColor("#fafafa"));
+    const QColor foreground = tokenColor(palette, "foreground", dark ? QColor("#bebebe") : QColor("#242424"));
+    const QColor accent = tokenColor(palette, "accent", QColor("#FFD60A"));
+    QVariantMap colors{
+        {"background", background}, {"foreground", foreground}, {"accent", accent},
+        {"surface", tokenColor(palette, "lighter_background", background)},
+        {"preview", tokenColor(palette, "darker_background", background.darker(120))},
+        {"secondary", tokenColor(palette, "light_foreground", dark ? QColor("#8a8a8d") : QColor("#686868"))},
+        {"muted", tokenColor(palette, "muted", dark ? background.lighter(160) : background.darker(120))},
+        {"selection", tokenColor(palette, "selection", accent)},
+        {"urgent", tokenColor(shell, "bar.active", tokenColor(palette, "red", QColor("#d35f5f")))}
+    };
+    auto number = [&](const QString &key, double fallback) {
+        bool ok = false; const double value = shell.value(key).toString().toDouble(&ok);
+        return ok && std::isfinite(value) ? value : fallback;
+    };
+    auto controlColor = [&](const QString &state) {
+        const QString token = shell.value("controls." + state + "-color", "foreground").toString();
+        return tokenColor(shell, "controls." + state + "-color", colors.value(token, foreground).value<QColor>());
+    };
+    const double base = qBound(10.0, number("font.base-size", 12), 24.0);
+    QVariantMap style{
+        {"fontSize", base}, {"controlHeight", qMax(28.0, number("spacing.control-height", 28 * base / 12))},
+        {"normalFill", withAlpha(controlColor("normal"), number("controls.normal-fill-alpha", .04))},
+        {"hoverFill", withAlpha(controlColor("hover-cursor"), number("controls.hover-cursor-fill-alpha", .08))},
+        {"pressedFill", withAlpha(controlColor("hover-cursor"), number("controls.pressed-fill-alpha", .22))},
+        {"normalBorder", withAlpha(tokenColor(shell, "controls.normal-border", foreground), number("controls.normal-border-alpha", .4))},
+        {"hoverBorder", withAlpha(tokenColor(shell, "controls.hover-cursor-border", foreground), number("controls.hover-cursor-border-alpha", .25))},
+        {"focusBorder", withAlpha(tokenColor(shell, "controls.focus-border", foreground), number("controls.focus-border-alpha", .25))},
+        {"borderWidth", qBound(0.0, number("controls.normal-border-width", 1), 4.0)}
+    };
+    if (colors != m_colors || style != m_style || dark != m_dark) {
+        m_colors = colors; m_style = style; m_dark = dark; m_accent = accent.name();
         emit changed();
     }
 }

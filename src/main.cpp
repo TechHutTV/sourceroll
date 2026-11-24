@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("source-record"); app.setApplicationVersion("0.1.2");
+    app.setApplicationName("source-record"); app.setApplicationVersion("0.2.0");
     app.setDesktopFileName("source-record");
     app.setWindowIcon(QIcon::fromTheme("source-record"));
     app.setQuitOnLastWindowClosed(false);
@@ -159,6 +159,20 @@ int main(int argc, char *argv[]) {
                 if (socket->bytesAvailable() > 65536) { socket->abort(); return; }
                 if (!socket->canReadLine()) return;
                 const auto request = QJsonDocument::fromJson(socket->readLine(65536)).object();
+                if (request["command"] == "subscribe-meter") {
+                    if (socket->property("meterSubscribed").toBool()) return;
+                    socket->setProperty("meterSubscribed", true);
+                    auto push = [&, socket] {
+                        // A paused shell gets the next live reading, never a growing stale queue.
+                        if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 2048) return;
+                        const QJsonObject event{{"event", "meter"}, {"peakDb", backend.peakDb()}};
+                        socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
+                        socket->flush();
+                    };
+                    QObject::connect(&backend, &Backend::peakChanged, socket, push);
+                    push();
+                    return;
+                }
                 const auto response = backend.handle(request);
                 socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
                 socket->flush(); socket->disconnectFromServer();

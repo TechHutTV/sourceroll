@@ -14,7 +14,9 @@ Search **Source Record** in the app launcher (Super + Space). Select a camera, s
 
 Click the bar camera icon for start/stop and monitoring. Middle-click toggles recording; right-click opens the app. Closing or hiding the window keeps an active recording running. When idle, hiding releases the camera and microphone. The bar shows elapsed time and turns urgent while recording. OBS is never started, stopped or modified by this tool. Don't open the same camera in OBS or Omarchy's webcam overlay while recording here.
 
-The meter shows recent peak dBFS, not loudness. Keep speech below 0 dBFS to avoid clipping. Screen and camera starts are independent; clap once to align recordings during editing. MKV tolerates interruptions better than a conventional MP4, but always stop normally to finalize the index. Do not unplug the camera during a take.
+The meter shows recent peak dBFS, not loudness. It updates on a separate 40 ms timer with a fast attack and brief release, and the bar receives readings over a persistent user-only local socket. PulseAudio capture uses a small requested buffer. Keep speech below 0 dBFS to avoid clipping. Screen and camera starts are independent; clap once to align recordings during editing. MKV tolerates interruptions better than a conventional MP4, but always stop normally to finalize the index. Do not unplug the camera during a take.
+
+The full app follows Omarchy's `colors.toml` and `shell.toml` live: background, foreground, secondary text, accent, error color, light/dark mode, control fills and borders, font size, and control height. Flat controls use the system monospace font and Hyprland rounding. Switching themes replaces the palette without restarting or interrupting recording.
 
 | Shortcut | Action |
 | --- | --- |

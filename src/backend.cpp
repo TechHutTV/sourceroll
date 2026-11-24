@@ -87,6 +87,14 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
         emit statusChanged();
     });
     m_tick.start();
+    // Fast attack with a short release makes brief speech peaks visible without lagging the input.
+    m_meter.setInterval(40);
+    connect(&m_meter, &QTimer::timeout, this, [this] {
+        const double peak = qMax(m_pendingPeak, qMax(-90.0, m_peak - 6.0));
+        m_pendingPeak = -90;
+        if (peak != m_peak) { m_peak = peak; emit peakChanged(); }
+    });
+    m_meter.start();
     m_restart.setSingleShot(true); m_restart.setInterval(250);
     connect(&m_restart, &QTimer::timeout, this, [this] { if (m_visible && !m_recording && m_process.state() == QProcess::NotRunning) launch(false); });
     m_watchdog.setInterval(10000);
@@ -168,7 +176,7 @@ QStringList Backend::ffmpegArguments(const QJsonObject &s, const QString &output
     QStringList args{"-hide_banner", "-nostats", "-loglevel", "info", "-stats_period", "0.5", "-progress", "pipe:2", "-n",
         "-thread_queue_size", "512", "-f", "v4l2", "-input_format", format, "-video_size", size, "-framerate", rate, "-i", s["camera"].toString()};
     bool audio = s["audio"] != "none";
-    if (audio) args << "-thread_queue_size" << "512" << "-f" << "pulse" << "-i" << s["audio"].toString();
+    if (audio) args << "-thread_queue_size" << "512" << "-f" << "pulse" << "-fragment_size" << "4096" << "-i" << s["audio"].toString();
     const QString meter = "astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.Peak_level";
     if (recording) {
         args << "-map" << "0:v:0";
@@ -233,7 +241,7 @@ void Backend::launch(bool recording) {
         m_output = QDir(dir).filePath("camera-" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz") + ".mkv");
         if (!saveSettings()) return;
     }
-    m_frames.clear(); m_messages.clear(); m_log.clear(); m_peak = -90; m_error.clear();
+    m_frames.clear(); m_messages.clear(); m_log.clear(); m_peak = -90; m_pendingPeak = -90; m_error.clear(); emit peakChanged();
     m_recording = recording; m_recordedMs = 0;
     m_state = recording ? "starting" : "preview-starting";
     if (recording) m_elapsed.start();
@@ -302,14 +310,21 @@ void Backend::consumeMessages() {
     for (;;) {
         auto end = m_messages.indexOf('\n'); if (end < 0) break;
         auto line = m_messages.left(end).trimmed(); m_messages.remove(0, end + 1);
-        const QByteArray key("lavfi.astats.Overall.Peak_level=");
-        const auto offset = line.indexOf(key);
-        if (offset >= 0) {
-            bool ok = false; const double peak = line.mid(offset + key.size()).toDouble(&ok);
-            m_peak = ok && std::isfinite(peak) ? qBound(-90.0, peak, 0.0) : -90;
-        }
+        const auto peak = parsePeak(line);
+        if (peak) m_pendingPeak = qMax(m_pendingPeak, *peak);
     }
     if (m_messages.size() > 65536) m_messages.clear();
+}
+
+std::optional<double> Backend::parsePeak(const QByteArray &line) {
+    const QByteArray key("lavfi.astats.Overall.Peak_level=");
+    const auto offset = line.indexOf(key);
+    if (offset < 0) return std::nullopt;
+    const auto text = line.mid(offset + key.size()).trimmed();
+    if (text == "-inf") return -90;
+    bool ok = false; const double peak = text.toDouble(&ok);
+    if (!ok || !std::isfinite(peak)) return std::nullopt;
+    return qBound(-90.0, peak, 0.0);
 }
 
 void Backend::finish(int code, QProcess::ExitStatus exitStatus) {
@@ -319,7 +334,7 @@ void Backend::finish(int code, QProcess::ExitStatus exitStatus) {
         m_recordedMs = m_elapsed.elapsed();
         if (QFileInfo(m_output).size() > 0) m_lastOutput = m_output;
     }
-    m_recording = false; m_peak = -90; m_state = "idle";
+    m_recording = false; m_peak = -90; m_pendingPeak = -90; m_state = "idle"; emit peakChanged();
     if (!m_shuttingDown && (code != 0 || exitStatus != QProcess::NormalExit))
         fail(tr("Capture failed. Check the camera and microphone.\n%1").arg(QString::fromUtf8(m_log.right(1800))));
     else if (wasRecording && QFileInfo(m_output).size() == 0)

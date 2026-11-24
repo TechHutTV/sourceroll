@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
@@ -15,6 +16,7 @@ BarWidget {
     property var status: ({recording: false, state: "idle", elapsed: 0, peakDb: -90, error: "", output: ""})
     property bool unavailable: false
     property bool changing: false
+    property real livePeak: -90
     function open() { opened = true; refresh() }
     function close() { opened = false }
     function refresh() { if (!poll.running) poll.running = true }
@@ -25,6 +27,19 @@ BarWidget {
         control.running = true
     }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
+    Socket {
+        id: meterSocket
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/source-record.sock"
+        onConnectionStateChanged: {
+            if (connected) { write('{"command":"subscribe-meter"}\n'); flush() }
+            else root.livePeak = -90
+        }
+        parser: SplitParser {
+            splitMarker: "\n"
+            onRead: function(data) { const peak = Model.parseMeter(String(data)); if (peak !== null) root.livePeak = peak }
+        }
+    }
+    Timer { interval: 2000; running: true; repeat: true; triggeredOnStart: true; onTriggered: if (root.status.running && !meterSocket.connected) meterSocket.connected = true }
     Timer { interval: root.unavailable ? 15000 : root.opened ? 400 : 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
     Process {
         id: poll
@@ -35,7 +50,11 @@ BarWidget {
             onStreamFinished: {
                 let value = Model.parseStatus(text)
                 poll.received = true
-                if (value) { root.status = value; root.unavailable = false }
+                if (value) {
+                    root.status = value; root.unavailable = false
+                    if (value.running && !meterSocket.connected) meterSocket.connected = true
+                    if (!value.running && meterSocket.connected) meterSocket.connected = false
+                }
                 else root.unavailable = true
             }
         }
@@ -82,7 +101,7 @@ BarWidget {
             }
             Rectangle {
                 Layout.fillWidth: true; height: Style.space(5); color: Commons.Color.foreground; opacity: 0.8
-                Rectangle { width: parent.width * Math.max(0, (root.status.peakDb + 60) / 60); height: parent.height; color: root.status.peakDb > -3 ? Commons.Color.urgent : Commons.Color.accent }
+                Rectangle { width: parent.width * Math.max(0, (root.livePeak + 60) / 60); height: parent.height; color: root.livePeak > -3 ? Commons.Color.urgent : Commons.Color.accent }
             }
             Text {
                 Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap

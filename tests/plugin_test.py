@@ -19,6 +19,10 @@ assert(parseStatus('{"recording":true,"elapsedSeconds":1e99}').elapsed === 35999
 assert(!safeText('<img src="https://example.invalid/a">').includes('<'))
 assert(safeText('&<"\'').includes('&amp;'))
 assert(duration(83) === '01:23')
+assert(parseMeter('{"event":"meter","peakDb":0}') === 0)
+assert(parseMeter('{"event":"meter","peakDb":-18}') === -18)
+assert(parseMeter('{"event":"meter","peakDb":"<img>"}') === null)
+assert(parseMeter('x'.repeat(513)) === null)
 console.log('Plugin parsing and rich-text boundary tests passed.')
 '''
 with tempfile.NamedTemporaryFile(suffix='.js', mode='w') as f:

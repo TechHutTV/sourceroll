@@ -3,7 +3,7 @@
 Verified on the recording computer on 2026-11-24.
 
 - qmake6 / GCC build succeeds.
-- Qt Test: 9 cases pass, including settings persistence, unavailable camera errors, source argument handling, no-audio capture construction, stream copy versus encoding, theme/language watching, actual QML loading, Space start/stop, Escape hide, close versus quit, and English/Danish window rendering without QML warnings.
+- Qt Test: 11 cases pass, including settings persistence, unavailable camera errors, source argument handling, no-audio capture construction, stream copy versus encoding, full theme/language watching, peak parsing, actual QML loading and dropdown interaction, Space start/stop, Escape hide, close versus quit, and English/Danish window rendering without QML warnings.
 - Plugin manifest passes `omarchy plugin validate`.
 - Plugin JavaScript tests cover malformed/oversized status data, markup boundaries, elapsed formatting, and PlainText usage for status/error/path output.
 - Real Canon V4L2 source detected: MJPEG 1920×1080 at 30/1 fps.
@@ -22,3 +22,10 @@ The monitoring preview is 640 pixels wide at 30 fps. This does not resize or dro
 - User plugin local.source-record enabled in the right bar section before the tray. Plugin backups live outside the plugin discovery directory.
 - The installed Wayland app opens successfully with the Canon preview and Shure meter. User confirmed the 30 fps preview is smooth, with a slight delay.
 - Installed recorder command verified using fps=30 for its 640-pixel preview. Recording remains off; preview intentionally left open for the user.
+
+## Theme and metering update (0.2.0)
+
+- Full palette follows atomic theme-file replacements, including a dark-to-light change with an unchanged accent; shell font-size updates are observed live. Theme tests use temporary directories and leave the desktop theme alone.
+- App controls use Omarchy palette values, monospace typography, flat borders and state fills. Generic Material chrome and fixed blue-gray colors were removed.
+- Live microphone subscription received 65 readings over 3.08 seconds in a hardware test, with a median 40.1 ms between updates. This measures delivery cadence, not end-to-end acoustic latency.
+- App meter updates independently of the 250 ms general status refresh. Bar meter uses a persistent local socket, not subprocess polling. Slow subscribers cannot accumulate an unbounded meter queue.

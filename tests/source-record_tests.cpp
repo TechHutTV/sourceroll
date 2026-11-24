@@ -1,11 +1,13 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickImageProvider>
 #include <QQuickWindow>
+#include <QQuickItem>
 #include <QQuickStyle>
 #include <QDir>
 #include "backend.h"
@@ -20,6 +22,7 @@ class DemoBackend : public QObject {
     Q_PROPERTY(QVariantMap settings READ settings CONSTANT)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
     Q_PROPERTY(int frameNumber READ frameNumber CONSTANT)
+    Q_PROPERTY(double peakDb READ peakDb CONSTANT)
 public:
     QVariantList cameras() const { return {QVariantMap{{"id", "demo"}, {"label", "Studio Camera"}}}; }
     QVariantList microphones() const { return {QVariantMap{{"id", "mic"}, {"label", "Studio Microphone"}}}; }
@@ -27,6 +30,7 @@ public:
     QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Source Record"}, {"encoding", "original"}}; }
     QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Source Record/camera-demo.mkv"}}; }
     int frameNumber() const { return 1; }
+    double peakDb() const { return -18; }
     Q_INVOKABLE void setWindowVisible(bool) {}
     Q_INVOKABLE void toggle() { recording = !recording; emit statusChanged(); }
     Q_INVOKABLE void stop() { recording = false; emit statusChanged(); }
@@ -85,6 +89,32 @@ private slots:
         auto preview = Backend::ffmpegArguments(s, {}, false);
         QVERIFY(!preview.contains("matroska")); QVERIFY(preview.contains("image2pipe"));
     }
+    void meterParsesLiveMetadata() {
+        QVERIFY(!Backend::parsePeak("not a meter"));
+        QCOMPARE(*Backend::parsePeak("[Parsed_ametadata_1 @ 0xabcd] lavfi.astats.Overall.Peak_level=-18.25"), -18.25);
+        QCOMPARE(*Backend::parsePeak("lavfi.astats.Overall.Peak_level=-inf"), -90.0);
+        QCOMPARE(*Backend::parsePeak("lavfi.astats.Overall.Peak_level=2"), 0.0);
+        QVERIFY(!Backend::parsePeak("lavfi.astats.Overall.Peak_level=nan"));
+        QVERIFY(!Backend::parsePeak("lavfi.astats.Overall.Peak_level=invalid"));
+    }
+    void fullPaletteFollowsThemeReplacements() {
+        QTemporaryDir dir; QDir(dir.path()).mkpath("theme");
+        const QString path = dir.filePath("theme/colors.toml");
+        write(path, "mode = \"dark\"\naccent = \"#e68e0d\"\nbackground = \"#121212\"\nforeground = \"#bebebe\"\n");
+        write(dir.filePath("theme/shell.toml"), "[font]\nbase-size = 14\n[controls]\nnormal-fill-alpha = 0.12\n");
+        Theme theme(dir.path());
+        QCOMPARE(theme.colors()["background"].value<QColor>(), QColor("#121212"));
+        QCOMPARE(theme.style()["fontSize"].toDouble(), 14.0);
+        QSignalSpy spy(&theme, &Theme::changed);
+        QSaveFile replacement(path); QVERIFY(replacement.open(QIODevice::WriteOnly));
+        replacement.write("mode = \"light\"\naccent = \"#e68e0d\"\nbackground = \"#fafafa\"\nforeground = \"#242424\"\n"); QVERIFY(replacement.commit());
+        QTRY_VERIFY(!theme.dark());
+        QCOMPARE(theme.colors()["background"].value<QColor>(), QColor("#fafafa"));
+        QCOMPARE(theme.colors()["foreground"].value<QColor>(), QColor("#242424"));
+        QVERIFY(spy.count() > 0);
+        write(dir.filePath("theme/shell.toml"), "[font]\nbase-size = 16\n");
+        QTRY_COMPARE(theme.style()["fontSize"].toDouble(), 16.0);
+    }
     void rawAndCompressedModesEncodeCorrectly() {
         auto s = settings(); s["mode"] = "1920x1080@30/1:yuyv422";
         auto args = Backend::ffmpegArguments(s, "/tmp/a.mkv", true);
@@ -133,6 +163,12 @@ private slots:
         engine.load(QUrl("qrc:/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
         window->requestActivate(); QTest::qWait(300);
+        auto cameraChoice = window->findChild<QQuickItem *>("cameraChoice"); QVERIFY(cameraChoice);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, cameraChoice->mapToScene(QPointF(cameraChoice->width()/2, cameraChoice->height()/2)).toPoint());
+        QTest::qWait(50); QTest::keyClick(window, Qt::Key_Down); QTest::keyClick(window, Qt::Key_Return);
+        auto popup = cameraChoice->property("popup").value<QObject *>(); QVERIFY(popup);
+        QTRY_VERIFY(!popup->property("visible").toBool());
+        QTest::qWait(250); window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Space); QTRY_VERIFY(backend.recording);
         QTest::keyClick(window, Qt::Key_Space); QTRY_VERIFY(!backend.recording);
         auto screenshot = window->grabWindow(); QVERIFY(!screenshot.isNull());
