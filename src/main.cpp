@@ -32,8 +32,8 @@ static void requestTermination(int) {
 class PreviewProvider : public QQuickImageProvider {
 public:
     explicit PreviewProvider(Backend *backend) : QQuickImageProvider(Image), m_backend(backend) {}
-    QImage requestImage(const QString &, QSize *size, const QSize &) override {
-        auto image = m_backend->previewImage();
+    QImage requestImage(const QString &id, QSize *size, const QSize &) override {
+        auto image = id.startsWith("screen/") ? m_backend->screenImage() : m_backend->previewImage();
         if (image.isNull()) { image = QImage(640, 360, QImage::Format_RGB32); image.fill(QColor("#12151a")); }
         *size = image.size(); return image;
     }
@@ -58,7 +58,7 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Multitake — separate sources, one take\n\nmultitake open\nmultitake status|start|stop|toggle|settings|devices|ensure|recover [--json]\nmultitake configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nmultitake check [--json]\nmultitake skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Multitake — separate sources, one take\n\nmultitake open\nmultitake status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nmultitake configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nmultitake check [--json]\nmultitake skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
@@ -82,7 +82,7 @@ static int cli(const QStringList &args) {
         puts(QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
         return result["ok"].toBool() ? 0 : 1;
     }
-    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover"}.contains(command)) {
+    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover", "choose-screen"}.contains(command)) {
         fputs("Unknown command. Run multitake --help.\n", stderr); return 1;
     }
     QJsonObject request{{"command", command}};
@@ -90,10 +90,10 @@ static int cli(const QStringList &args) {
         QJsonObject settings;
         for (int i = 2; i < args.size(); ++i) {
             QString key = args[i].mid(2);
-            const QMap<QString,QString> aliases{{"camera-enabled","cameraEnabled"},{"screen-enabled","screenEnabled"},{"microphone-enabled","microphoneEnabled"},{"desktop-enabled","desktopEnabled"},{"screen-target","screenTarget"},{"screen-fps","screenFps"},{"desktop-audio","desktopAudio"}};
+            const QMap<QString,QString> aliases{{"camera-enabled","cameraEnabled"},{"screen-enabled","screenEnabled"},{"microphone-enabled","microphoneEnabled"},{"desktop-enabled","desktopEnabled"},{"screen-target","screenTarget"},{"screen-fps","screenFps"},{"screen-quality","screenQuality"},{"desktop-audio","desktopAudio"}};
             key = aliases.value(key, key);
             if (args[i] == "--json") continue;
-            if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "desktopAudio"}.contains(key) || i + 1 >= args.size()) {
+            if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "screenQuality", "desktopAudio"}.contains(key) || i + 1 >= args.size()) {
                 fputs("Invalid configuration option.\n", stderr); return 1;
             }
             const QString value = args[++i];
@@ -139,7 +139,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("multitake"); app.setApplicationVersion("0.4.0");
+    app.setApplicationName("multitake"); app.setApplicationVersion("0.5.0");
     app.setDesktopFileName("multitake");
     app.setWindowIcon(QIcon::fromTheme("multitake"));
     app.setQuitOnLastWindowClosed(false);
@@ -179,15 +179,17 @@ int main(int argc, char *argv[]) {
                     socket->setProperty("previewSubscribed", true);
                     backend.addPreviewClient();
                     QObject::connect(socket, &QLocalSocket::disconnected, &backend, &Backend::removePreviewClient);
-                    QObject::connect(&backend, &Backend::frameReady, socket, [&, socket] {
+                    auto push = [&, socket](bool screen) {
                         // Skip busy clients instead of queuing camera frames behind a slow shell.
                         if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 0) return;
-                        const auto jpeg = backend.previewJpeg();
+                        const auto jpeg = screen ? backend.screenJpeg() : backend.previewJpeg();
                         if (jpeg.isEmpty() || jpeg.size() > 750000) return;
-                        const QJsonObject event{{"event", "preview"}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
+                        const QJsonObject event{{"event", "preview"}, {"source", screen ? "screen" : "camera"}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
                         socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
                         socket->flush();
-                    });
+                    };
+                    QObject::connect(&backend, &Backend::frameReady, socket, [push] { push(false); });
+                    QObject::connect(&backend, &Backend::screenFrameReady, socket, [push] { push(true); });
                     return;
                 }
                 if (request["command"] == "subscribe-meter") {

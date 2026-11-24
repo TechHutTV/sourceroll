@@ -12,6 +12,12 @@ function parseStatus(text) {
             screenEnabled: value.screenEnabled === true,
             microphoneEnabled: value.microphoneEnabled !== false,
             desktopEnabled: value.desktopEnabled === true,
+            screenSelected: value.screenSelected === true,
+            screenSelecting: value.screenSelecting === true,
+            screenPreviewState: String(value.screenPreviewState || "inactive").substring(0, 32),
+            cameraPreviewState: String(value.cameraPreviewState || "inactive").substring(0, 32),
+            screenRecording: (value.state === "recording" || value.state === "starting") && Array.isArray(value.sources) && value.sources.slice(0, 4).some(function(s) { return s && s.id === "screen" && s.state === "recording" }),
+            cameraRecording: (value.state === "recording" || value.state === "starting") && Array.isArray(value.sources) && value.sources.slice(0, 4).some(function(s) { return s && s.id === "camera" && s.state === "recording" }),
             warning: String(value.warning || "").substring(0,2000),
             state: String(value.state || "idle").substring(0, 32),
             elapsed: Math.max(0, Math.min(359999, Number(value.elapsedSeconds) || 0)),
@@ -41,11 +47,13 @@ function parseMeter(text) {
     } catch (_) { return null }
 }
 
-function parsePreview(text) {
+function parsePreview(text, source) {
     if (typeof text !== "string" || text.length > 1000100) return null
     try {
         const value = JSON.parse(text)
         if (value.event !== "preview" || typeof value.jpeg !== "string" || value.jpeg.length > 1000000) return null
+        const id = value.source || "camera"
+        if ((id !== "camera" && id !== "screen") || id !== (source || "camera")) return null
         if (!value.jpeg.startsWith('/9j/') || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.jpeg)) return null
         return "data:image/jpeg;base64," + value.jpeg
     } catch (_) { return null }

@@ -16,7 +16,11 @@ Ui.Panel {
     readonly property bool unavailable: hostWidget ? hostWidget.unavailable : false
     readonly property real livePeak: hostWidget ? hostWidget.livePeak : -90
     readonly property real desktopPeak: hostWidget ? hostWidget.desktopPeak : -90
-    readonly property string previewSource: hostWidget ? hostWidget.previewSource : ""
+    readonly property string monitorSource: hostWidget ? hostWidget.monitorSource : "camera"
+    readonly property string previewSource: hostWidget ? (monitorSource === "screen" ? hostWidget.screenPreviewSource : hostWidget.previewSource) : ""
+    readonly property string feedState: (monitorSource === "screen" ? status.screenPreviewState : status.cameraPreviewState) || "inactive"
+    readonly property bool previewStale: feedState === "stalled" || feedState === "error"
+    readonly property bool sourceRecording: monitorSource === "screen" ? !!status.screenRecording : !!status.cameraRecording
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     function switchPanel(direction) {
         if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(root.hostWidget || root, direction)
@@ -41,6 +45,19 @@ Ui.Panel {
                 width: parent.width
                 spacing: Style.space(12)
                 Text { textFormat: Text.PlainText; text: "Multitake"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: strings.t("monitor"); textFormat: Text.PlainText; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body }
+                    Item { Layout.fillWidth: true }
+                    Ui.Button { text: strings.t("source.screen"); selected: root.monitorSource === "screen"; onClicked: { root.hostWidget.monitorSource = "screen"; if (root.status.screenEnabled && !root.status.screenSelected && !root.status.recording && !root.status.screenSelecting) root.hostWidget.action("choose-screen") } }
+                    Ui.Button { text: strings.t("source.camera"); selected: root.monitorSource === "camera"; onClicked: root.hostWidget.monitorSource = "camera" }
+                }
+                Text {
+                    Layout.fillWidth: true; textFormat: Text.PlainText
+                    text: strings.t(root.monitorSource === "screen" ? "source.screen" : "source.camera") + (root.previewStale ? " · " + strings.t("preview.stale") : root.sourceRecording ? " · REC" : root.feedState === "live" ? " · LIVE" : "")
+                    color: root.previewStale || root.sourceRecording ? Commons.Color.accent : Commons.Color.foreground
+                    font.family: Style.font.family; font.pixelSize: Style.font.body
+                }
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: width * 9 / 16
@@ -50,20 +67,38 @@ Ui.Panel {
                     Image {
                         anchors.fill: parent; anchors.margins: 1
                         source: root.previewSource; cache: false
+                        visible: root.previewSource !== "" && (root.feedState === "live" || root.previewStale)
                         asynchronous: true; retainWhileLoading: true
                         fillMode: Image.PreserveAspectFit
                     }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: root.previewSource === "" && !root.status.recording && !root.status.screenSelecting
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: {
+                            if (root.monitorSource === "screen") root.hostWidget.action("choose-screen")
+                            else { root.hostWidget.action("open"); root.hostWidget.close() }
+                        }
+                    }
                     Text {
                         anchors.centerIn: parent; width: parent.width - 24
-                        visible: root.previewSource === ""; textFormat: Text.PlainText
-                        text: !root.status.cameraEnabled ? strings.t("preview.off") : root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening")
+                        visible: root.previewSource === "" || root.previewStale || root.feedState === "waiting" || root.feedState === "inactive"; textFormat: Text.PlainText
+                        text: root.previewStale ? strings.t("preview.stalled") : root.monitorSource === "screen" ? (!root.status.screenEnabled ? strings.t("preview.screen.off") : (root.status.state === "waiting-screen" || root.status.screenSelecting) ? strings.t("choose.screen") : root.status.recording ? strings.t("preview.screen.waiting") : strings.t("preview.screen.idle")) : !root.status.cameraEnabled ? strings.t("preview.off") : root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening")
                         horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                        style: Text.Outline; styleColor: Commons.Color.background
                         color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body
                     }
                 }
+                Ui.Button {
+                    Layout.fillWidth: true
+                    visible: root.monitorSource === "screen"
+                    text: strings.t("choose.screen.action")
+                    enabled: !root.changing && !root.status.recording && !root.status.screenSelecting
+                    onClicked: root.hostWidget.action("choose-screen")
+                }
                 Text {
                     Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
-                    text: root.unavailable ? strings.t("unavailable") : root.status.state === "waiting-screen" ? strings.t("choose.screen") : root.status.state === "validating" ? strings.t("validating") : root.status.recording ? strings.t("recording").arg(Model.duration(root.status.elapsed)) : strings.t("idle")
+                    text: root.unavailable ? strings.t("unavailable") : (root.status.state === "waiting-screen" || root.status.screenSelecting) ? strings.t("choose.screen") : root.status.state === "validating" ? strings.t("validating") : root.status.recording ? strings.t("recording").arg(Model.duration(root.status.elapsed)) : strings.t("idle")
                     color: root.status.recording ? Commons.Color.urgent : Commons.Color.foreground
                     font.family: Style.font.family; font.pixelSize: Style.font.body
                 }
@@ -95,7 +130,7 @@ Ui.Panel {
                 }
                 Ui.Button {
                     Layout.fillWidth: true; text: strings.t(root.status.recording ? "stop" : "start")
-                    bordered: true; enabled: !root.changing && root.status.state !== "stopping"
+                    bordered: true; enabled: !root.changing && root.status.state !== "stopping" && !root.status.screenSelecting
                     onClicked: root.hostWidget.action(root.status.recording ? "stop" : "start")
                 }
                 Ui.Button { Layout.fillWidth: true; text: strings.t("open"); bordered: true; onClicked: { root.hostWidget.action("open"); root.hostWidget.close() } }

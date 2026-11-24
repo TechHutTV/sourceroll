@@ -65,7 +65,38 @@ QVariantList Backend::cameraModes(const QString &device) {
     return result;
 }
 
-Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
+Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
+    m_portalCache(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/multitake-screen-XXXXXX") {
+    m_screenPreviewProcess.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
+    m_screenSelectTimer.setSingleShot(true); m_screenSelectTimer.setInterval(120000);
+    connect(&m_screenSelectTimer, &QTimer::timeout, this, [this] {
+        if (!m_screenPreviewHasData && m_screenPreviewProcess.state() != QProcess::NotRunning) {
+            stopScreenPreview(); m_screenSelectionError = tr("Screen selection timed out. Choose the source again."); emit statusChanged();
+        }
+    });
+    connect(&m_screenPreviewProcess, &QProcess::readyReadStandardOutput, this, [this] {
+        const auto bytes = m_screenPreviewProcess.readAllStandardOutput();
+        if (!bytes.isEmpty() && !m_screenPreviewStopping) {
+            m_screenSelectTimer.stop(); m_screenPreviewHasData = true; m_screenSelected = true; m_screenMonitor.feed(bytes); emit statusChanged();
+        }
+    });
+    connect(&m_screenPreviewProcess, &QProcess::readyReadStandardError, this, [this] {
+        // Portal restore tokens are capabilities, so do not retain the recorder's token diagnostics.
+        const auto data = m_screenPreviewProcess.readAllStandardError();
+        for (const auto &line : data.split('\n')) if (!line.contains("token") && (line.contains("error") || line.contains("failed") || line.contains("denied"))) m_screenPreviewLog = (m_screenPreviewLog + line + '\n').right(2000);
+    });
+    connect(&m_screenPreviewProcess, &QProcess::finished, this, [this](int code) {
+        m_screenSelectTimer.stop();
+        if (!m_screenPreviewStopping && !m_shuttingDown) {
+            m_screenMonitor.stop();
+            m_screenSelectionError = tr("Screen sharing ended or was cancelled. Choose the source again. %1").arg(QString::fromUtf8(m_screenPreviewLog.right(1200)));
+            if (code) m_screenSelected = false;
+            emit statusChanged();
+        }
+    });
+    connect(&m_screenPreviewProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) { m_screenSelectionError = tr("Screen preview could not start: %1").arg(m_screenPreviewProcess.errorString()); m_screenMonitor.stop(); emit statusChanged(); }
+    });
     // If the app crashes, ask only its own child to finalize rather than orphaning capture.
     m_process.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
     m_configFile = configFile.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.json" : configFile;
@@ -81,10 +112,17 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
     if (!m_settings.contains("desktopEnabled")) m_settings["desktopEnabled"] = false;
     if (!m_settings.contains("screenTarget")) m_settings["screenTarget"] = "portal";
     if (!m_settings.contains("screenFps")) m_settings["screenFps"] = 60;
+    if (!m_settings.contains("screenQuality")) m_settings["screenQuality"] = "very_high";
     m_session = new SessionRecorder(this);
+    connect(m_session, &SessionRecorder::screenStarting, &m_screenMonitor, &ScreenMonitor::start);
+    connect(m_session, &SessionRecorder::screenStopped, &m_screenMonitor, &ScreenMonitor::stop);
+    connect(m_session, &SessionRecorder::screenData, &m_screenMonitor, &ScreenMonitor::feed);
+    connect(m_session, &SessionRecorder::screenData, this, [this](const QByteArray &bytes) { if (!bytes.isEmpty()) m_screenSelected = true; });
+    connect(&m_screenMonitor, &ScreenMonitor::frameReady, this, &Backend::screenFrameReady);
     connect(m_session, &SessionRecorder::changed, this, &Backend::statusChanged);
     connect(m_session, &SessionRecorder::levels, this, [this](double mic, double desktop) { m_peak = mic; m_desktopPeak = desktop; emit peakChanged(); });
     connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &file) {
+        m_lastFrame.invalidate(); m_frameNumber = 0; m_image = {}; m_previewJpeg.clear(); emit frameReady();
         m_output = file; m_recording = true; m_state = "starting"; m_frames.clear(); m_messages.clear(); m_log.clear();
         m_process.start("ffmpeg", ffmpegArguments(m_settings, file, true)); m_watchdog.start();
     });
@@ -93,7 +131,7 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent) {
             QTimer::singleShot(8000, this, [this] { if (m_stopping || m_session->busy()) { if (m_process.state() != QProcess::NotRunning) m_process.kill(); } });
         }
     });
-    connect(m_session, &SessionRecorder::finished, this, [this] { m_recording = false; m_state = "idle"; if (!m_shuttingDown && (m_visible || m_previewClients)) m_restart.start(); });
+    connect(m_session, &SessionRecorder::finished, this, [this] { m_recording = false; m_state = "idle"; if (!m_shuttingDown && (m_visible || m_previewClients)) { m_restart.start(); if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false); } });
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &Backend::consumeVideo);
     connect(&m_process, &QProcess::readyReadStandardError, this, &Backend::consumeMessages);
     connect(&m_process, &QProcess::finished, this, &Backend::finish);
@@ -130,14 +168,16 @@ void Backend::shutdown() {
     if (m_shuttingDown) return;
     m_shuttingDown = true;
     m_restart.stop(); m_tick.stop(); m_watchdog.stop();
+    stopScreenPreview();
     m_session->stop(); stopProcess(); m_session->shutdown();
+    m_screenMonitor.stop();
 }
 
 void Backend::refreshDevices() {
     if (m_session && m_session->busy()) return;
     if (m_visible || m_previewClients > 0) stopProcess();
     m_cameras.clear(); m_microphones.clear(); m_desktopSources.clear(); m_screens.clear();
-    m_screens.append(QVariantMap{{"id", "portal"}, {"label", tr("Choose screen or window when recording")}});
+    m_screens.append(QVariantMap{{"id", "portal"}, {"label", tr("Screen/window picker")}});
     for (const auto &entry : QJsonDocument::fromJson(query("hyprctl", {"-j", "monitors"})).array()) {
         const auto monitor = entry.toObject();
         const auto name = monitor["name"].toString();
@@ -232,6 +272,13 @@ QVariantMap Backend::status() const {
     result["running"] = true; result["recording"] = busy;
     result["preview"] = m_process.state() != QProcess::NotRunning;
     result["peakDb"] = m_peak; result["desktopPeakDb"] = m_desktopPeak;
+    result["screenPreviewState"] = m_screenMonitor.state();
+    result["screenPreviewError"] = m_screenMonitor.error();
+    result["screenSelected"] = m_screenSelected;
+    result["screenSelecting"] = m_screenPreviewProcess.state() != QProcess::NotRunning && !m_screenPreviewHasData;
+    if (!busy && !m_screenSelectionError.isEmpty()) { result["screenPreviewState"] = "error"; result["screenPreviewError"] = m_screenSelectionError; }
+    result["cameraPreviewState"] = m_process.state() == QProcess::NotRunning ? "inactive" :
+        m_lastFrame.isValid() && m_lastFrame.elapsed() > 3000 ? "stalled" : m_frameNumber > 0 ? "live" : "waiting";
     result["camera"] = m_settings["camera"]; result["audio"] = m_settings["audio"];
     result["cameraEnabled"] = m_settings["cameraEnabled"]; result["screenEnabled"] = m_settings["screenEnabled"];
     result["microphoneEnabled"] = m_settings["microphoneEnabled"]; result["desktopEnabled"] = m_settings["desktopEnabled"];
@@ -249,12 +296,17 @@ bool Backend::saveSettings() {
 
 bool Backend::setSetting(const QString &key, const QVariant &value) {
     if (m_shuttingDown || m_session->busy() || m_state == "stopping") return false;
-    if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "desktopAudio"}.contains(key)) return false;
+    if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "screenQuality", "desktopAudio"}.contains(key)) return false;
+    if (key == "screenQuality" && !QStringList{"high", "very_high", "ultra"}.contains(value.toString())) return false;
     stopProcess();
     m_session->previewAudio(m_settings, false);
     if (key.endsWith("Enabled")) m_settings[key] = value.toBool();
     else if (key == "screenFps") m_settings[key] = qBound(15, value.toInt(), 120);
     else m_settings[key] = value.toString().left(4096);
+    if ((key == "screenEnabled" && !value.toBool()) || key == "screenTarget") {
+        stopScreenPreview(); m_screenSelected = false; m_screenSelectionError.clear();
+        QFile::remove(m_portalCache.filePath("restore-token"));
+    }
     if (key == "camera") m_settings["mode"] = modes().isEmpty() ? "" : modes().first().toMap()["id"].toString();
     emit settingsChanged();
     const bool saved = saveSettings();
@@ -282,6 +334,7 @@ void Backend::launch(bool recording) {
 
 bool Backend::start() {
     if (m_shuttingDown || m_session->busy()) return false;
+    if (m_screenPreviewProcess.state() != QProcess::NotRunning && !m_screenPreviewHasData) { fail(tr("Finish choosing the screen before starting a take.")); return false; }
     QString error;
     if (!SessionRecorder::validateSources(m_settings, &error) || !validSettings(m_settings, &error)) { fail(error); return false; }
     if (m_settings["cameraEnabled"].toBool(true)) {
@@ -290,8 +343,40 @@ bool Backend::start() {
         if (!supported) { fail(tr("The selected camera mode is unavailable.")); return false; }
     }
     if (!saveSettings()) return false;
-    stopProcess(); m_error.clear();
-    return m_session->start(m_settings);
+    stopScreenPreview(); stopProcess(); m_error.clear(); m_screenSelectionError.clear();
+    return m_session->start(m_settings, m_portalCache.filePath("restore-token"));
+}
+
+void Backend::stopScreenPreview() {
+    m_screenSelectTimer.stop();
+    if (m_screenPreviewProcess.state() == QProcess::NotRunning) return;
+    m_screenPreviewStopping = true;
+    ::kill(m_screenPreviewProcess.processId(), SIGINT);
+    if (!m_screenPreviewProcess.waitForFinished(3000)) { m_screenPreviewProcess.kill(); m_screenPreviewProcess.waitForFinished(1000); }
+    m_screenMonitor.stop(); m_screenPreviewStopping = false;
+}
+
+void Backend::startScreenPreview(bool choose) {
+    if (m_shuttingDown || m_session->busy() || !m_portalCache.isValid()) return;
+    if (m_settings["screenTarget"] != "portal") return;
+    if (!choose && (m_screenPreviewProcess.state() != QProcess::NotRunning || !QFileInfo::exists(m_portalCache.filePath("restore-token")))) return;
+    stopScreenPreview();
+    if (choose) { QFile::remove(m_portalCache.filePath("restore-token")); m_screenSelected = false; }
+    m_screenPreviewHasData = false;
+    m_screenSelectionError.clear(); m_screenPreviewLog.clear();
+    m_screenMonitor.setEnabled(true); m_screenMonitor.start();
+    m_screenPreviewProcess.start("gpu-screen-recorder", {"-w", "portal", "-f", "15", "-k", "h264", "-q", "medium", "-fallback-cpu-encoding", "yes", "-keyint", "1",
+        "-restore-portal-session", "yes", "-portal-session-token-filepath", m_portalCache.filePath("restore-token"), "-c", "mpegts", "-o", "/dev/stdout"});
+    m_screenSelectTimer.start();
+    emit statusChanged();
+}
+
+bool Backend::chooseScreen() {
+    if (m_shuttingDown || m_session->busy()) return false;
+    if (!m_portalCache.isValid()) { m_screenSelectionError = tr("Could not create a private screen-sharing session folder."); emit statusChanged(); return false; }
+    if (!m_settings["screenEnabled"].toBool()) setSetting("screenEnabled", true);
+    if (m_settings["screenTarget"] != "portal") setSetting("screenTarget", "portal");
+    startScreenPreview(true); return true;
 }
 
 void Backend::stopProcess() {
@@ -315,13 +400,20 @@ void Backend::toggle() { if (m_session->busy()) stop(); else start(); }
 void Backend::setWindowVisible(bool visible) {
     if (m_shuttingDown) return;
     m_visible = visible;
+    m_screenMonitor.setEnabled(m_visible || m_previewClients > 0);
+    if (!m_session->busy()) {
+        if (!m_visible && !m_previewClients) stopScreenPreview();
+        else if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false);
+    }
     if (m_session->busy()) return;
     if (!visible && m_previewClients == 0) stopProcess();
     else if (visible || m_previewClients > 0) m_restart.start();
 }
-void Backend::addPreviewClient() { ++m_previewClients; if (!m_session->busy()) m_restart.start(); }
+void Backend::addPreviewClient() { ++m_previewClients; m_screenMonitor.setEnabled(true); if (!m_session->busy()) { m_restart.start(); if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false); } }
 void Backend::removePreviewClient() {
     m_previewClients = qMax(0, m_previewClients - 1);
+    m_screenMonitor.setEnabled(m_visible || m_previewClients > 0);
+    if (!m_previewClients && !m_visible && !m_session->busy()) stopScreenPreview();
     if (!m_previewClients && !m_visible && !m_session->busy()) stopProcess();
 }
 bool Backend::recoverSession() { if (m_session->busy()) return false; stopProcess(); return m_session->recover(m_settings["directory"].toString()); }
@@ -386,6 +478,7 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     else if (command == "stop") stop();
     else if (command == "toggle") toggle();
     else if (command == "recover") ok = recoverSession();
+    else if (command == "choose-screen") ok = chooseScreen();
     else if (command == "open") emit openRequested();
     else if (command == "configure") {
         const auto options = request["settings"].toObject();

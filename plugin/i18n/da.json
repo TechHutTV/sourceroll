@@ -14,5 +14,12 @@
   "source.microphone": "Mikrofon",
   "source.desktop": "Systemlyd",
   "choose.screen": "Vælg en skærm eller et vindue…",
-  "validating": "Kontrollerer gemte filer…"
+  "validating": "Kontrollerer gemte filer…",
+  "monitor": "Monitor",
+  "preview.stale": "FORÆLDET",
+  "preview.stalled": "Forhåndsvisning er stoppet — kontrollér kilden",
+  "preview.screen.off": "Skærmkilden er slået fra",
+  "preview.screen.waiting": "Venter på skærmvisning…",
+  "preview.screen.idle": "Vælg en skærm eller et vindue til forhåndsvisning",
+  "choose.screen.action": "Vælg skærm/vindue"
 }

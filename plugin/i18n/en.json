@@ -14,5 +14,12 @@
   "source.microphone": "Microphone",
   "source.desktop": "Desktop audio",
   "choose.screen": "Choose a screen or window…",
-  "validating": "Checking saved files…"
+  "validating": "Checking saved files…",
+  "monitor": "Monitor",
+  "preview.stale": "STALE",
+  "preview.stalled": "Preview stalled — check the source",
+  "preview.screen.off": "Screen source is off",
+  "preview.screen.waiting": "Waiting for screen preview…",
+  "preview.screen.idle": "Choose a screen/window to preview",
+  "choose.screen.action": "Choose screen/window"
 }

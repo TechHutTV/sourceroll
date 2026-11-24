@@ -19,6 +19,8 @@ Ui.BarWidget {
     property real livePeak: -90
     property real desktopPeak: -90
     property string previewSource: ""
+    property string screenPreviewSource: ""
+    property string monitorSource: status.screenEnabled ? "screen" : "camera"
     function open() { if (panelLoader.item) panelLoader.item.open() }
     function close() { if (panelLoader.item) panelLoader.item.close() }
     function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
@@ -38,7 +40,7 @@ Ui.BarWidget {
     }
     onOpenedChanged: {
         if (opened) { action("ensure"); refresh() }
-        else { previewSocket.connected = false; previewSource = "" }
+        else { previewSocket.connected = false; previewSource = ""; screenPreviewSource = "" }
     }
     function refresh() { if (!poll.running) poll.running = true }
     function action(command) {
@@ -50,7 +52,7 @@ Ui.BarWidget {
     function setSource(key, enabled) {
         if (control.running || root.status.recording) return
         root.changing = true
-        control.command = ["multitake", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
+        control.command = key === "screen" && enabled ? ["multitake", "choose-screen", "--json"] : ["multitake", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
         control.running = true
     }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
@@ -59,11 +61,16 @@ Ui.BarWidget {
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/multitake.sock"
         onConnectionStateChanged: {
             if (connected) { write('{"command":"subscribe-preview"}\n'); flush() }
-            else root.previewSource = ""
+            else { root.previewSource = ""; root.screenPreviewSource = "" }
         }
         parser: SplitParser {
             splitMarker: "\n"
-            onRead: function(data) { const image = Model.parsePreview(String(data)); if (image !== null) root.previewSource = image }
+            onRead: function(data) {
+                const camera = Model.parsePreview(String(data), "camera")
+                const screen = Model.parsePreview(String(data), "screen")
+                if (camera !== null) root.previewSource = camera
+                if (screen !== null) root.screenPreviewSource = screen
+            }
         }
     }
     Socket {
@@ -98,6 +105,7 @@ Ui.BarWidget {
                 if (value) {
                     root.status = value; root.unavailable = false
                     if (!value.cameraEnabled) root.previewSource = ""
+                    if (value.screenPreviewState === "inactive") root.screenPreviewSource = ""
                     if (value.running && !meterSocket.connected) meterSocket.connected = true
                     if (!value.running && meterSocket.connected) meterSocket.connected = false
                     if (root.opened && value.running && !previewSocket.connected) previewSocket.connected = true

@@ -20,6 +20,7 @@ ApplicationWindow {
     Material.roundedScale: theme.radius
     property var state: backend.status
     property var prefs: backend.settings
+    property string monitorView: "both"
     property bool helpVisible: false
     property bool allowQuit: false
     property bool busy: state.recording || state.state === "stopping" || state.state === "validating"
@@ -31,7 +32,13 @@ ApplicationWindow {
         let s = Math.floor(seconds || 0)
         return Math.floor(s / 3600).toString().padStart(2, "0") + ":" + Math.floor(s % 3600 / 60).toString().padStart(2, "0") + ":" + (s % 60).toString().padStart(2, "0")
     }
+    function sourceRecording(id) {
+        if (state.state !== "recording" && state.state !== "starting") return false
+        const sources = state.sources || []
+        return sources.some(function(source) { return source.id === id && source.state === "recording" })
+    }
     function stateLabel() {
+        if (state.screenSelecting) return qsTr("Choose a screen or window…")
         if (state.state === "waiting-screen") return qsTr("Choose a screen or window…")
         if (state.state === "validating") return qsTr("Checking saved files…")
         if (state.state === "saved") return qsTr("Session saved")
@@ -41,12 +48,13 @@ ApplicationWindow {
         if (state.state === "preview") return qsTr("Live preview")
         if (state.state === "preview-starting") return qsTr("Opening camera…")
         if (state.state === "error") return qsTr("Needs attention")
+        if (state.screenPreviewState === "live") return qsTr("Live preview")
         return qsTr("Camera idle")
     }
     onVisibleChanged: backend.setWindowVisible(visible)
     Component.onCompleted: backend.setWindowVisible(visible)
     onClosing: function(close) { close.accepted = win.allowQuit; if (!win.allowQuit) win.hide() }
-    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; enabled: !folder.activeFocus; onActivated: backend.toggle() }
+    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; enabled: !folder.activeFocus && !win.state.screenSelecting; onActivated: backend.toggle() }
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !folder.activeFocus; onActivated: win.helpVisible = !win.helpVisible }
     Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !folder.activeFocus; onActivated: quitDialog.open() }
     Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; onActivated: win.helpVisible ? win.helpVisible = false : win.hide() }
@@ -184,7 +192,7 @@ ApplicationWindow {
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 18
-                SourceSwitch { text: qsTr("Screen"); checked: !!win.prefs.screenEnabled; onClicked: backend.setSetting("screenEnabled", checked) }
+                SourceSwitch { text: qsTr("Screen"); checked: !!win.prefs.screenEnabled; onClicked: { backend.setSetting("screenEnabled", checked); if (checked) backend.chooseScreen() } }
                 SourceSwitch { text: qsTr("Camera"); checked: !!win.prefs.cameraEnabled; onClicked: backend.setSetting("cameraEnabled", checked) }
                 SourceSwitch { text: qsTr("Microphone"); checked: !!win.prefs.microphoneEnabled; onClicked: backend.setSetting("microphoneEnabled", checked) }
                 SourceSwitch { text: qsTr("Desktop audio"); checked: !!win.prefs.desktopEnabled; onClicked: backend.setSetting("desktopEnabled", checked) }
@@ -195,28 +203,43 @@ ApplicationWindow {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 18
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
-                    Rectangle {
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Caption { text: qsTr("Monitor") }
+                        Item { Layout.fillWidth: true }
+                        RecordButton { objectName: "monitorScreen"; text: qsTr("Screen"); highlighted: win.monitorView === "screen"; onClicked: { win.monitorView = "screen"; if (win.prefs.screenEnabled && !win.state.screenSelected && !win.busy && !win.state.screenSelecting) backend.chooseScreen() } }
+                        RecordButton { objectName: "monitorCamera"; text: qsTr("Camera"); highlighted: win.monitorView === "camera"; onClicked: win.monitorView = "camera" }
+                        RecordButton { objectName: "monitorBoth"; text: qsTr("Both"); highlighted: win.monitorView === "both"; onClicked: win.monitorView = "both" }
+                    }
+                    GridLayout {
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 240
-                        color: theme.colors.preview; radius: theme.radius; clip: true
-                        border.width: 1; border.color: theme.colors.muted
-                        Image {
-                            id: preview
-                            anchors.fill: parent; fillMode: Image.PreserveAspectFit
-                            cache: false
-                            source: backend.frameNumber > 0 ? "image://preview/frame/" + backend.frameNumber : ""
-                            visible: win.state.preview && backend.frameNumber > 0
+                        columns: width >= 620 ? 2 : 1
+                        rowSpacing: 8; columnSpacing: 8
+                        SourceMonitor {
+                            objectName: "screenMonitor"
+                            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
+                            visible: win.monitorView !== "camera"
+                            sourceLabel: qsTr("Screen")
+                            canChoose: !win.busy && !win.state.screenSelecting
+                            onChooseRequested: backend.chooseScreen()
+                            feedState: win.state.screenPreviewState || "inactive"
+                            imageSource: backend.screenFrameNumber > 0 && feedState !== "inactive" ? "image://preview/screen/" + backend.screenFrameNumber : ""
+                            recording: win.sourceRecording("screen")
+                            sourceEnabled: !!win.prefs.screenEnabled
+                            emptyText: !sourceEnabled ? qsTr("Click to choose a screen/window") : (win.state.state === "waiting-screen" || win.state.screenSelecting) ? qsTr("Choose a screen or window…") : win.state.recording ? qsTr("Waiting for screen preview…") : qsTr("Choose a screen/window to preview")
                         }
-                        PlainLabel {
-                            anchors.centerIn: parent
-                            visible: !preview.visible
-                            text: win.state.state === "error" ? qsTr("Camera unavailable") : !win.prefs.cameraEnabled ? qsTr("Camera source is off") : qsTr("Waiting for camera…")
-                            color: theme.colors.secondary
-                        }
-                        Rectangle {
-                            anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 12
-                            width: liveLabel.implicitWidth + 18; height: 28; radius: Math.min(4, theme.radius)
-                            color: theme.colors.background; opacity: 0.92; visible: preview.visible
-                            PlainLabel { id: liveLabel; anchors.centerIn: parent; font.pixelSize: 11; text: win.state.recording ? qsTr("REC · %1").arg(win.duration(win.state.elapsedSeconds)) : qsTr("PREVIEW · NOT RECORDING") }
+                        SourceMonitor {
+                            objectName: "cameraMonitor"
+                            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
+                            visible: win.monitorView !== "screen"
+                            sourceLabel: qsTr("Camera")
+                            canChoose: !win.busy
+                            onChooseRequested: { if (!win.prefs.cameraEnabled) backend.setSetting("cameraEnabled", true); cameraChoice.popup.open() }
+                            feedState: win.state.cameraPreviewState || (win.state.preview ? "live" : "inactive")
+                            imageSource: backend.frameNumber > 0 ? "image://preview/frame/" + backend.frameNumber : ""
+                            recording: win.sourceRecording("camera")
+                            sourceEnabled: !!win.prefs.cameraEnabled
+                            emptyText: !sourceEnabled ? qsTr("Camera source is off") : win.state.state === "error" ? qsTr("Camera unavailable") : qsTr("Waiting for camera…")
                         }
                     }
                     RowLayout {
@@ -260,6 +283,7 @@ ApplicationWindow {
                         PlainLabel { text: qsTr("Sources"); font.weight: Font.DemiBold; font.pixelSize: theme.style.fontSize + 1 }
                         Caption { text: qsTr("Camera") }
                         RecordCombo {
+                            id: cameraChoice
                             objectName: "cameraChoice"
                             implicitHeight: theme.style.controlHeight + 4; font.pixelSize: theme.style.fontSize
                             Layout.fillWidth: true; enabled: !win.busy; model: backend.cameras; textRole: "label"
@@ -299,12 +323,32 @@ ApplicationWindow {
                             currentIndex: win.indexOf(backend.screens, win.prefs.screenTarget)
                             onActivated: backend.setSetting("screenTarget", model[currentIndex].id)
                         }
+                        RecordButton {
+                            Layout.fillWidth: true; enabled: !win.busy && !win.state.screenSelecting
+                            text: qsTr("Choose screen/window")
+                            onClicked: backend.chooseScreen()
+                        }
+                        PlainLabel {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            visible: !!win.state.screenPreviewError
+                            text: win.state.screenPreviewError || ""
+                            color: theme.accent; font.pixelSize: theme.style.fontSize - 1
+                        }
+                        Caption { text: qsTr("Screen frame rate") }
                         RecordCombo {
                             Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.screenEnabled
                             model: [qsTr("30 fps"), qsTr("60 fps")]
                             currentIndex: win.prefs.screenFps >= 60 ? 1 : 0
                             onActivated: backend.setSetting("screenFps", currentIndex === 0 ? 30 : 60)
                         }
+                        Caption { text: qsTr("Screen quality") }
+                        RecordCombo {
+                            Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.screenEnabled
+                            model: [qsTr("High"), qsTr("Very high"), qsTr("Ultra")]
+                            currentIndex: ["high", "very_high", "ultra"].indexOf(win.prefs.screenQuality || "very_high")
+                            onActivated: backend.setSetting("screenQuality", ["high", "very_high", "ultra"][currentIndex])
+                        }
+                        Caption { Layout.fillWidth: true; wrapMode: Text.Wrap; text: qsTr("Native screen resolution · H.264. Higher quality uses more storage.") }
                         Caption { text: qsTr("Desktop audio source") }
                         RecordCombo {
                             Layout.fillWidth: true; enabled: !win.busy && !!win.prefs.desktopEnabled
@@ -346,7 +390,7 @@ ApplicationWindow {
                 RecordButton { text: qsTr("Hide to bar"); onClicked: win.hide() }
                 RecordButton {
                     text: win.state.recording ? qsTr("Stop and save") : qsTr("Record enabled sources")
-                    highlighted: true; enabled: win.state.state !== "stopping"
+                    highlighted: true; enabled: win.state.state !== "stopping" && !win.state.screenSelecting
                     onClicked: backend.toggle()
                 }
             }

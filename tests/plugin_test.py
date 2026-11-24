@@ -30,6 +30,11 @@ assert(parseMeter('{"event":"meter","peakDb":"<img>"}') === null)
 assert(parseMeter('x'.repeat(513)) === null)
 assert(parseDesktopMeter('{"event":"meter","desktopPeakDb":-12}') === -12)
 assert(parseDesktopMeter('{"event":"meter","desktopPeakDb":"bad"}') === null)
+assert(parsePreview('{"event":"preview","source":"screen","jpeg":"/9j/2Q=="}', 'screen') !== null)
+assert(parsePreview('{"event":"preview","source":"screen","jpeg":"/9j/2Q=="}', 'camera') === null)
+assert(parsePreview('{"event":"preview","source":"<img>","jpeg":"/9j/2Q=="}', 'screen') === null)
+assert(parseStatus('{"recording":true,"state":"recording","sources":[{"id":"screen","state":"recording"}]}').screenRecording)
+assert(!parseStatus('{"recording":true,"state":"validating","sources":[{"id":"screen","state":"recording"}]}').screenRecording)
 console.log('Plugin parsing and rich-text boundary tests passed.')
 '''
 with tempfile.NamedTemporaryFile(suffix='.js', mode='w') as f:

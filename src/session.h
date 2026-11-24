@@ -15,7 +15,7 @@ public:
     ~SessionRecorder() override;
     bool busy() const { return m_busy; }
     QVariantMap status() const;
-    bool start(const QJsonObject &settings);
+    bool start(const QJsonObject &settings, const QString &portalTokenPath = {});
     void stop(const QString &reason = {});
     void shutdown();
     void previewAudio(const QJsonObject &settings, bool enabled);
@@ -27,7 +27,11 @@ public:
     static QJsonObject timeline(const QJsonObject &manifest, const QString &directory);
     static bool validateSources(const QJsonObject &settings, QString *error);
     static QStringList audioArguments(const QString &source, const QString &file, bool meter);
+    static QString screenOutput();
 signals:
+    void screenStarting();
+    void screenStopped();
+    void screenData(const QByteArray &bytes);
     void changed();
     void cameraStartRequested(const QString &file);
     void cameraStopRequested();

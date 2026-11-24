@@ -6,9 +6,9 @@ A focused recorder for Omarchy. Select a screen or window, camera, microphone, a
 
 ## Record a take
 
-Search **Multitake** in the app launcher (Super + Space). Enable the sources you need and select their devices. Screen capture defaults to the native Wayland screen/window chooser; choose the source when recording starts. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
+Search **Multitake** in the app launcher (Super + Space). Enable the sources you need and select their devices. Enabling the Screen source opens the native Wayland screen/window chooser and starts a live preview before recording. Click an empty Screen preview pane to choose a source directly, including in Both view. Use **Choose screen/window** to change an existing selection. Recording asks the portal to restore that selection; the portal can request approval again if restoration is unavailable or permission has changed. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
 
-The system chooser uses still thumbnails. Multitake keeps the system picker unchanged; it does not provide live display thumbnails or a live screen preview in this version.
+The system chooser still uses snapshots. Multitake leaves the shared picker unchanged and shows a live screen preview after you approve a source. Choosing or previewing a screen does not save a recording.
 
 The app shows preparation, screen-selection, recording, stopping, and file-validation states. A take is reported as saved only after its files pass validation. Settings are locked during capture and finalization. Turning a source off excludes it from the take; it does not mute or modify the system device.
 
@@ -26,7 +26,7 @@ take-YYYY-MM-DD_HH-mm-ss-mmm/
 
 Only enabled sources produce files. Files have `.partial` in their names until validated. Screen and camera video remain separate. Microphone and desktop audio are separate uncompressed PCM WAV files, with RF64 support for long takes.
 
-Original camera mode preserves supported MJPEG/H.264 streams without re-encoding. H.264 mode produces smaller files; raw YUYV cameras also use H.264. Available camera resolutions and rates come from the device. Screen capture uses GPU Screen Recorder with H.264, a selectable frame rate, and CPU fallback when hardware encoding is unavailable. Original MJPEG can produce large files; watch disk space.
+Original camera mode preserves supported MJPEG/H.264 streams without re-encoding. H.264 mode produces smaller files; raw YUYV cameras also use H.264. Available camera resolutions and rates come from the device. Screen capture uses GPU Screen Recorder with H.264 at the source's native resolution, 30/60 fps controls, and High / Very high / Ultra quality presets. Very high is the default; higher quality generally uses more storage. CPU encoding is a fallback when hardware encoding is unavailable. Original MJPEG can produce large files; watch disk space.
 
 ## Timing and editing
 
@@ -38,9 +38,9 @@ A system clock jump is reported as a timing warning. If timing metadata is missi
 
 ## Preview and widget
 
-Click the bar icon for camera preview, source switches, microphone level, and recording controls. Middle-click toggles recording; right-click opens the full app. The app and widget share one camera capture and a 640-pixel-wide preview at up to 30 fps. Preview scaling does not resize the saved video. The widget retains the previous frame while the next one loads.
+The app offers **Screen / Camera / Both** monitoring views; the bar popup switches between **Screen / Camera**. These monitor controls do not change which sources are saved. Turning on the Screen source opens the picker; the separate **Choose screen/window** control changes the selection while idle. Click the bar icon for previews, source switches, audio meters, and recording controls. Middle-click toggles recording; right-click opens the full app. The app and widget share one camera capture and a 640-pixel-wide preview at up to 30 fps. The screen preview is up to 15 fps at 640 pixels wide. During recording it decodes a copy of the exact encoded screen stream, including window-only captures; it does not capture a different display or reread a growing recording file. The saved file is the primary output, and a separate bounded FIFO branch can drop preview packets without stopping file capture. Preview scaling does not resize the saved video. The widget retains the previous frame while the next one loads.
 
-Closing the main window hides it and keeps an active take recording. When idle, closing the last preview viewer releases capture devices. Screen/window permission is requested only when starting an enabled screen source. The microphone and desktop meters show recent peak dBFS, update independently of general status, and do not play input audio through the speakers. Keep peaks below 0 dBFS.
+Closing the main window hides it and keeps an active take recording. When idle, closing the last preview viewer releases capture devices. Screen/window permission is requested when you choose a source, or when starting screen capture without a restorable selection. A private, temporary portal restore token belongs only to this app session; it is not written into settings or recordings. Hiding the last idle viewer releases screen capture, and reopening can restore the approved source. No preview video is saved. Preview decoders retry after failure and report stale/error states; a static image is not treated as a freeze as long as frames keep arriving. The microphone and desktop meters show recent peak dBFS, update independently of general status, and do not play input audio through the speakers. Keep peaks below 0 dBFS.
 
 The app follows Omarchy's palette and control tokens live, including light/dark colors, accent, borders, font size, and Hyprland rounding. Switching themes does not restart recording.
 
@@ -83,7 +83,8 @@ multitake open
 multitake devices --json
 multitake settings --json
 multitake configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json
-multitake configure --screen-target portal --screen-fps 60 --json
+multitake configure --screen-target portal --screen-fps 60 --screen-quality very_high --json
+multitake choose-screen --json
 multitake status --json
 multitake start --json
 multitake stop --json

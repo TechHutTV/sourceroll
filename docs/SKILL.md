@@ -3,7 +3,8 @@ name: multitake
 description: Control Multitake sessions containing separate screen, camera, microphone, and desktop-audio files.
 ---
 
-Inspect with `multitake status --json`, `devices --json`, and `settings --json`. Open settings with `multitake open`. Configure source switches with `configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json`; use IDs from devices for the selected camera, mode, audio inputs, and screen target.
+Inspect with `multitake choose-screen --json  # Opens the native picker and previews without saving video.
+multitake status --json`, `devices --json`, and `settings --json`. Open settings with `multitake open`. Configure source switches with `configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json`; use IDs from devices for the selected camera, mode, audio inputs, and screen target.
 
 Only start recording when requested. `multitake start --json` acknowledges preparation, not readiness: wait for state `recording`. A native portal picker may need the user to select a screen/window. `stop --json` begins coordinated stop and file checks; wait for recording false, inspect state/error and each source. Session files, offsets and the OTIO timeline are in the reported output folder. Never claim incomplete files are successful recordings. `recover --json` checks a previous incomplete take without recapturing.
 

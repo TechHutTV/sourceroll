@@ -28,6 +28,7 @@ class DemoBackend : public QObject {
     Q_PROPERTY(QVariantMap settings READ settings CONSTANT)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
     Q_PROPERTY(int frameNumber READ frameNumber CONSTANT)
+    Q_PROPERTY(int screenFrameNumber READ frameNumber CONSTANT)
     Q_PROPERTY(double peakDb READ peakDb CONSTANT)
 public:
     QVariantList cameras() const { return {QVariantMap{{"id", "demo"}, {"label", "Studio Camera"}}}; }
@@ -37,7 +38,7 @@ public:
     double desktopPeakDb() const { return -28; }
     QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
     QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Multitake"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
-    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Multitake/camera-demo.mkv"}}; }
+    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Multitake/take-demo"}}; }
     int frameNumber() const { return 1; }
     double peakDb() const { return -18; }
     Q_INVOKABLE void setWindowVisible(bool) {}
@@ -46,21 +47,23 @@ public:
     Q_INVOKABLE void openFolder() {}
     Q_INVOKABLE void refreshDevices() {}
     Q_INVOKABLE bool recoverSession() { return true; }
+    Q_INVOKABLE bool chooseScreen() { emit screenChoiceRequested(); return true; }
     Q_INVOKABLE void shutdown() {}
     Q_INVOKABLE bool setSetting(const QString &, const QVariant &) { return true; }
     bool recording = false;
 signals:
     void statusChanged();
+    void screenChoiceRequested();
 };
 
 class DemoPreview : public QQuickImageProvider {
 public:
     DemoPreview() : QQuickImageProvider(Image) {}
-    QImage requestImage(const QString &, QSize *size, const QSize &) override {
+    QImage requestImage(const QString &id, QSize *size, const QSize &) override {
         QImage image(640, 360, QImage::Format_RGB32);
         for (int y = 0; y < 360; ++y) for (int x = 0; x < 640; ++x) {
             const bool circle = (x - 320)*(x - 320)+(y - 180)*(y - 180) < 95*95;
-            image.setPixelColor(x,y,circle ? QColor("#ffd60a") : QColor(18+x/18, 24+y/15, 38+x/25));
+            image.setPixelColor(x,y,id.startsWith("screen/") ? ((x / 80 + y / 45) % 2 ? QColor("#343944") : QColor("#20242b")) : circle ? QColor("#ffd60a") : QColor(18+x/18, 24+y/15, 38+x/25));
         }
         *size = image.size(); return image;
     }
@@ -76,6 +79,22 @@ private:
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(contents), contents.size());
     }
 private slots:
+    void screenMonitorDecodesActualStreamAndDetectsStaleness() {
+        QTemporaryDir dir; const auto file = dir.filePath("screen.ts");
+        QProcess encoder; encoder.start("ffmpeg", {"-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15", "-t", "3", "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-f", "mpegts", file});
+        QVERIFY(encoder.waitForFinished(5000)); QCOMPARE(encoder.exitCode(), 0);
+        QFile stream(file); QVERIFY(stream.open(QIODevice::ReadOnly));
+        ScreenMonitor monitor; monitor.setEnabled(true); monitor.start();
+        QCOMPARE(monitor.state(), "waiting");
+        monitor.feed(stream.readAll());
+        QTRY_VERIFY_WITH_TIMEOUT(monitor.frameNumber() > 5, 5000);
+        QCOMPARE(monitor.image().width(), 640); QVERIFY(monitor.jpeg().startsWith(QByteArray::fromHex("ffd8")));
+        QCOMPARE(monitor.state(), "live");
+        QTRY_COMPARE_WITH_TIMEOUT(monitor.state(), "stalled", 5000);
+        monitor.setEnabled(false); QCOMPARE(monitor.state(), "inactive"); QVERIFY(monitor.jpeg().isEmpty());
+        monitor.stop(); monitor.start(); QCOMPARE(monitor.frameNumber(), 0); QVERIFY(monitor.image().isNull());
+        monitor.stop();
+    }
     void migrationKeepsExistingPreferences() {
         QTemporaryDir dir;
         const auto old = dir.filePath("old.json"), target = dir.filePath("new/settings.json");
@@ -95,6 +114,8 @@ private slots:
         QString error; QVERIFY(!SessionRecorder::validateSources(selected,&error));
         selected["screenEnabled"] = true; selected["screenTarget"] = "portal";
         QVERIFY(SessionRecorder::validateSources(selected,&error));
+        selected["screenQuality"] = "custom;unsafe"; QVERIFY(!SessionRecorder::validateSources(selected,&error));
+        selected["screenQuality"] = "ultra"; QVERIFY(SessionRecorder::validateSources(selected,&error));
         selected["microphoneEnabled"] = true; selected["audio"] = "none";
         QVERIFY(!SessionRecorder::validateSources(selected,&error));
         QCOMPARE(SessionRecorder::packetTimestamp("[video] demuxer -> ist_index:0:0 type:video pkt_pts_time:1795556332.248325"),1795556332248325LL);
@@ -263,6 +284,21 @@ private slots:
         engine.load(QUrl("qrc:/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
         window->requestActivate(); QTest::qWait(300);
+        auto screenMonitor = window->findChild<QQuickItem *>("screenMonitor"); QVERIFY(screenMonitor);
+        auto cameraMonitor = window->findChild<QQuickItem *>("cameraMonitor"); QVERIFY(cameraMonitor);
+        const auto screenImage = screenMonitor->property("imageSource");
+        screenMonitor->setProperty("imageSource", "");
+        QSignalSpy selection(&backend, &DemoBackend::screenChoiceRequested);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, screenMonitor->mapToScene(QPointF(screenMonitor->width()/2, screenMonitor->height()/2)).toPoint());
+        QCOMPARE(selection.count(), 1);
+        screenMonitor->setProperty("imageSource", screenImage);
+        for (const QString &view : {QString("screen"), QString("camera"), QString("both")}) {
+            auto button = window->findChild<QQuickItem *>("monitor" + view.left(1).toUpper() + view.mid(1)); QVERIFY(button);
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
+            QTRY_COMPARE(window->property("monitorView").toString(), view);
+            QCOMPARE(screenMonitor->isVisible(), view != "camera");
+            QCOMPARE(cameraMonitor->isVisible(), view != "screen");
+        }
         auto cameraChoice = window->findChild<QQuickItem *>("cameraChoice"); QVERIFY(cameraChoice);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, cameraChoice->mapToScene(QPointF(cameraChoice->width()/2, cameraChoice->height()/2)).toPoint());
         QTest::qWait(50); QTest::keyClick(window, Qt::Key_Down); QTest::keyClick(window, Qt::Key_Return);

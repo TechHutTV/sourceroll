@@ -8,6 +8,8 @@
 #include <QJsonObject>
 #include <QImage>
 #include <optional>
+#include "screenmonitor.h"
+#include <QTemporaryDir>
 class SessionRecorder;
 
 class Backend : public QObject {
@@ -18,6 +20,7 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
     Q_PROPERTY(int frameNumber READ frameNumber NOTIFY frameReady)
+    Q_PROPERTY(int screenFrameNumber READ screenFrameNumber NOTIFY screenFrameReady)
     Q_PROPERTY(double peakDb READ peakDb NOTIFY peakChanged)
     Q_PROPERTY(double desktopPeakDb READ desktopPeakDb NOTIFY peakChanged)
     Q_PROPERTY(QVariantList screens READ screens NOTIFY devicesChanged)
@@ -37,6 +40,9 @@ public:
     QVariantList desktopSources() const { return m_desktopSources; }
     QImage previewImage() const { return m_image; }
     QByteArray previewJpeg() const { return m_previewJpeg; }
+    int screenFrameNumber() const { return m_screenMonitor.frameNumber(); }
+    QImage screenImage() const { return m_screenMonitor.image(); }
+    QByteArray screenJpeg() const { return m_screenMonitor.jpeg(); }
     void addPreviewClient();
     void removePreviewClient();
     QJsonObject handle(const QJsonObject &request);
@@ -56,11 +62,13 @@ public:
     Q_INVOKABLE void openFolder();
     Q_INVOKABLE void dismissError();
     Q_INVOKABLE bool recoverSession();
+    Q_INVOKABLE bool chooseScreen();
 signals:
     void devicesChanged();
     void settingsChanged();
     void statusChanged();
     void frameReady();
+    void screenFrameReady();
     void peakChanged();
     void openRequested();
 private:
@@ -69,14 +77,23 @@ private:
     void consumeMessages();
     void finish(int code, QProcess::ExitStatus exitStatus);
     void stopProcess();
+    void stopScreenPreview();
+    void startScreenPreview(bool choose);
     bool saveSettings();
     void fail(const QString &message);
     QProcess m_process;
+    ScreenMonitor m_screenMonitor;
+    QProcess m_screenPreviewProcess;
+    QTemporaryDir m_portalCache;
+    QByteArray m_screenPreviewLog;
+    QString m_screenSelectionError;
+    bool m_screenSelected = false, m_screenPreviewStopping = false, m_screenPreviewHasData = false;
     SessionRecorder *m_session = nullptr;
     QTimer m_tick;
     QTimer m_meter;
     QTimer m_restart;
     QTimer m_watchdog;
+    QTimer m_screenSelectTimer;
     QElapsedTimer m_elapsed;
     QElapsedTimer m_lastFrame;
     QString m_configFile;

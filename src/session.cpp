@@ -23,6 +23,12 @@ static bool selected(const QJsonObject &s, const QString &id) { return s.value(i
 static QJsonObject rational(double value, double rate = 60) { return {{"OTIO_SCHEMA", "RationalTime.1"}, {"value", value * rate}, {"rate", rate}}; }
 static QJsonObject range(double start, double duration) { return {{"OTIO_SCHEMA", "TimeRange.1"}, {"start_time", rational(start)}, {"duration", rational(duration)}}; }
 
+QString SessionRecorder::screenOutput() {
+    // The file branch remains primary. The FIFO preview branch may drop packets
+    // or fail independently, so a slow viewer cannot stall the saved recording.
+    return "[f=matroska]screen.partial.mkv|[f=mpegts:onfail=ignore:use_fifo=1:fifo_options=drop_pkts_on_overflow=1]pipe:1";
+}
+
 qint64 SessionRecorder::monotonicUs() { timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000; }
 
 qint64 SessionRecorder::packetTimestamp(const QByteArray &line) {
@@ -52,6 +58,10 @@ bool SessionRecorder::validateSources(const QJsonObject &s, QString *error) {
         if (error) *error = tr("Select a screen source.");
         return false;
     }
+    if (selected(s, "screen") && s.contains("screenQuality") && !QStringList{"high", "very_high", "ultra"}.contains(s["screenQuality"].toString())) {
+        if (error) *error = tr("Choose a supported screen quality preset.");
+        return false;
+    }
     return true;
 }
 
@@ -69,6 +79,7 @@ SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, 
     : QObject(parent), m_screenProgram(screenProgram), m_audioProgram(audioProgram) {
     auto child = [](QProcess &p) { p.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); }); };
     child(m_screen); child(m_probe);
+    connect(&m_screen, &QProcess::readyReadStandardOutput, this, [this] { emit screenData(m_screen.readAllStandardOutput()); });
     for (int i = 0; i < 2; ++i) {
         child(m_audio[i]);
         connect(&m_audio[i], &QProcess::readyReadStandardError, this, [this, i] { readAudio(i); });
@@ -77,7 +88,10 @@ SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, 
             if (e == QProcess::FailedToStart) workerFinished(i, 1);
         });
     }
-    connect(&m_screen, &QProcess::readyReadStandardError, this, [this] { m_screenLog = (m_screenLog + m_screen.readAllStandardError()).right(8000); });
+    connect(&m_screen, &QProcess::readyReadStandardError, this, [this] {
+        for (const auto &line : m_screen.readAllStandardError().split('\n'))
+            if (!line.contains("token") && (line.contains("error") || line.contains("failed") || line.contains("denied") || line.contains("Error"))) m_screenLog = (m_screenLog + line + '\n').right(8000);
+    });
     connect(&m_screen, &QProcess::finished, this, [this](int code) { workerFinished(2, code); });
     connect(&m_screen, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) { if (e == QProcess::FailedToStart) workerFinished(2, 1); });
     connect(&m_probe, &QProcess::finished, this, [this](int code) { probeFinished(code); });
@@ -143,7 +157,7 @@ void SessionRecorder::previewAudio(const QJsonObject &settings, bool enabled) {
     if (selected(settings, "desktop")) startAudio(1, settings["desktopAudio"].toString(), {});
 }
 
-bool SessionRecorder::start(const QJsonObject &settings) {
+bool SessionRecorder::start(const QJsonObject &settings, const QString &portalTokenPath) {
     if (m_busy) return false;
     QString error;
     if (!validateSources(settings, &error)) { m_error = error; m_state = "error"; emit changed(); return false; }
@@ -175,10 +189,14 @@ bool SessionRecorder::start(const QJsonObject &settings) {
         {"epochMonotonicUs", double(m_epochMono)}, {"sources", sources}, {"settings", settings}};
     m_busy = true; m_state = selected(settings, "screen") && settings["screenTarget"] == "portal" ? "waiting-screen" : "starting"; save();
     if (selected(settings, "screen")) {
-        const QString file = QDir(m_directory).filePath(source("screen")["file"].toString());
         m_screenLog.clear();
+        m_screen.setWorkingDirectory(m_directory);
         QStringList args{"-w", settings["screenTarget"].toString(), "-f", QString::number(settings["screenFps"].toInt(60)),
-            "-fm", "cfr", "-k", "h264", "-q", "very_high", "-fallback-cpu-encoding", "yes", "-write-first-frame-ts", "yes", "-o", file};
+            "-fm", "cfr", "-k", "h264", "-q", settings["screenQuality"].toString("very_high"), "-fallback-cpu-encoding", "yes", "-write-first-frame-ts", "yes",
+            "-keyint", "1", "-c", "tee", "-o", screenOutput()};
+        if (!portalTokenPath.isEmpty() && settings["screenTarget"] == "portal")
+            args << "-restore-portal-session" << "yes" << "-portal-session-token-filepath" << portalTokenPath;
+        emit screenStarting();
         m_screen.start(m_screenProgram, args);
     } else launchSources();
     emit changed(); return true;
@@ -229,7 +247,11 @@ void SessionRecorder::cameraFinished(int code, const QString &error) {
 
 void SessionRecorder::workerFinished(int index, int code) {
     if (m_shutdown) return;
-    if (index == 2) m_screenLog = (m_screenLog + m_screen.readAllStandardError()).right(8000);
+    if (index == 2) { emit screenData(m_screen.readAllStandardOutput()); emit screenStopped(); }
+    if (index == 2) {
+        for (const auto &line : m_screen.readAllStandardError().split('\n'))
+            if (!line.contains("token") && (line.contains("error") || line.contains("failed") || line.contains("denied") || line.contains("Error"))) m_screenLog = (m_screenLog + line + '\n').right(8000);
+    }
     else readAudio(index);
     const QString id = index == 2 ? "screen" : index == 0 ? "microphone" : "desktop";
     if (!m_busy) {
@@ -265,13 +287,15 @@ void SessionRecorder::poll() {
         return;
     }
     if (!m_stopping && selected(m_settings, "screen") && !source("screen").contains("firstMonotonicUs")) {
-        QFile ts(QDir(m_directory).filePath(source("screen")["file"].toString() + ".ts"));
+        QFile ts(QDir(m_directory).filePath(screenOutput() + ".ts"));
         if (ts.open(QIODevice::ReadOnly)) {
             const auto values = QString::fromUtf8(ts.read(4096)).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
             for (int i = 0; i + 1 < values.size(); ++i) {
                 bool ok = false; const auto mono = values[i].toLongLong(&ok); if (!ok || mono < 1) continue;
                 const auto real = values[i + 1].toLongLong(&ok); if (!ok || real < 1000000000000000LL) continue;
-                timestamp("screen", mono, real); launchSources(); break;
+                timestamp("screen", mono, real);
+                ts.close(); ts.rename(QDir(m_directory).filePath("screen.partial.mkv.ts"));
+                launchSources(); break;
             }
         }
     }
