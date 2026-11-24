@@ -2,19 +2,19 @@
 
 # Source Record
 
-A small Omarchy camera recorder. FFmpeg records the camera into its own timestamped MKV file while OBS records the screen independently. Preview, microphone peak meter, elapsed time and file size stay visible in the app. A bar widget provides controls and recording status.
+A small camera recorder for Omarchy, powered by FFmpeg. Record a camera and selected microphone to timestamped MKV files, with a live preview, microphone peak meter, elapsed time, and file size. A bar widget provides live preview and recording controls.
 
-The Canon's native 1920×1080 MJPEG at 30 fps is stream-copied without re-encoding by default. A smaller H.264 option uses CRF 18. Raw YUYV modes also use CRF 18. Audio is 48 kHz PCM when the device provides 48 kHz. Original MJPEG files are large; watch free disk space. The input is opened once and shared with a 640-pixel-wide, 30 fps monitoring preview. The preview is not the recorded frame rate.
+Original mode preserves supported MJPEG and H.264 camera streams without re-encoding. The smaller H.264 option uses CRF 18; raw YUYV modes also use H.264. Audio is saved as uncompressed PCM. Available capture resolutions and frame rates come from the selected camera. The app and widget share a 640-pixel-wide preview at up to 30 fps; preview scaling does not resize the saved recording.
 
-The local Canon test used about 1.2 GB per minute in Original mode. Choose H.264 for smaller takes.
+File size depends on the camera format, scene, and encoding settings. Original MJPEG can produce large files; choose H.264 for smaller recordings.
 
 ## Use
 
-Search **Source Record** in the app launcher (Super + Space). Select a camera, supported resolution/frame rate, microphone (or No audio), encoding and output folder. Defaults prefer 1080p MJPEG and a Shure microphone if present. A configured missing device causes a visible error instead of silently switching inputs. No sound is played through the speakers.
+Search **Source Record** in the app launcher (Super + Space). Select a camera, supported resolution/frame rate, microphone (or No audio), encoding and output folder. Review the selected camera mode and audio source before recording. A configured missing device causes a visible error instead of silently switching inputs. No sound is played through the speakers.
 
-Click the bar camera icon for a live camera preview, microphone meter, and start/stop controls. The popup uses the recorder’s existing 30 fps preview feed; opening it never starts a second camera capture. With no recording active and the app hidden, closing the popup releases the camera. Middle-click toggles recording; right-click opens the app. Closing or hiding the window keeps an active recording running. When idle, hiding releases the camera and microphone. The bar shows elapsed time and turns urgent while recording. OBS is never started, stopped or modified by this tool. Don't open the same camera in OBS or Omarchy's webcam overlay while recording here.
+Click the bar camera icon for a live camera preview, microphone meter, and start/stop controls. The popup uses the recorder’s existing 30 fps preview feed; opening it never starts a second camera capture. With no recording active and the app hidden, closing the popup releases the camera. Middle-click toggles recording; right-click opens the app. Closing or hiding the window keeps an active recording running. When idle, hiding releases the camera and microphone. The bar shows elapsed time and turns urgent while recording. Other applications may need to release the camera before capture can start.
 
-The meter shows recent peak dBFS, not loudness. It updates on a separate 40 ms timer with a fast attack and brief release, and the bar receives readings over a persistent user-only local socket. PulseAudio capture uses a small requested buffer. Keep speech below 0 dBFS to avoid clipping. Screen and camera starts are independent; clap once to align recordings during editing. MKV tolerates interruptions better than a conventional MP4, but always stop normally to finalize the index. Do not unplug the camera during a take.
+The meter shows recent peak dBFS, not loudness. It updates on a separate 40 ms timer with a fast attack and brief release, and the bar receives readings over a persistent user-only local socket. PulseAudio capture uses a small requested buffer. Keep speech below 0 dBFS to avoid clipping. MKV tolerates interruptions better than a conventional MP4, but always stop normally to finalize the index. Do not unplug the camera during a take.
 
 The full app follows Omarchy's `colors.toml` and `shell.toml` live: background, foreground, secondary text, accent, error color, light/dark mode, control fills and borders, font size, and control height. Flat controls use the system monospace font and Hyprland rounding. Switching themes replaces the palette without restarting or interrupting recording.
 
@@ -27,7 +27,7 @@ The full app follows Omarchy's `colors.toml` and `shell.toml` live: background, 
 
 ## Build and install
 
-Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, FFmpeg and pactl. Video discovery uses the Linux V4L2 API. The app doesn't depend on OBS or the OBS Source Record plugin.
+Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, FFmpeg and pactl. Video discovery uses the Linux V4L2 API.
 
 ```sh
 bin/build
@@ -66,6 +66,6 @@ Remove `~/.config/omarchy/plugins/local.source-record` if no longer wanted. Sett
 
 ## Scope
 
-Discrete V4L2 MJPEG, H.264 and YUYV camera modes are supported. Other formats and stepwise-only modes are not listed. The original stream option preserves the camera's USB output; it cannot recover detail the camera discarded internally. Monitoring is visual and metered; headphone monitoring and OBS synchronization are outside this version.
+Discrete V4L2 MJPEG, H.264 and YUYV camera modes are supported. Other formats and stepwise-only modes are not listed. The original stream option preserves the camera's USB output; it cannot recover detail the camera discarded internally. Monitoring is visual and metered; headphone monitoring and synchronization with other recorders are outside this version.
 
 MIT licensed. Theme and language integration follow Omarchy's Omacut/Monologue templates, with attribution in LICENSE. English and Danish catalogs are included with live language/theme switching and English fallback.
