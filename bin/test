@@ -3,7 +3,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build/tests"
 cd "$ROOT/build/tests"
-qmake6 "$ROOT/tests/multitake_tests.pro"
+qmake6 "$ROOT/tests/sourceroll_tests.pro"
 make -j"$(nproc)"
-QT_QPA_PLATFORM=offscreen ./multitake_tests
+QT_QPA_PLATFORM=offscreen ./sourceroll_tests
 python3 "$ROOT/tests/plugin_test.py"

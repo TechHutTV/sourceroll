@@ -8,7 +8,7 @@ import "Model.js" as Model
 
 Ui.BarWidget {
     id: root
-    moduleName: "local.multitake"
+    moduleName: "local.sourceroll"
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -46,19 +46,19 @@ Ui.BarWidget {
     function action(command) {
         if (control.running || changing) return
         changing = true
-        control.command = ["multitake", command, "--json"]
+        control.command = ["sourceroll", command, "--json"]
         control.running = true
     }
     function setSource(key, enabled) {
         if (control.running || root.status.recording) return
         root.changing = true
-        control.command = key === "screen" && enabled ? ["multitake", "choose-screen", "--json"] : ["multitake", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
+        control.command = key === "screen" && enabled ? ["sourceroll", "choose-screen", "--json"] : ["sourceroll", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
         control.running = true
     }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     Socket {
         id: previewSocket
-        path: Quickshell.env("XDG_RUNTIME_DIR") + "/multitake.sock"
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/sourceroll.sock"
         onConnectionStateChanged: {
             if (connected) { write('{"command":"subscribe-preview"}\n'); flush() }
             else { root.previewSource = ""; root.screenPreviewSource = "" }
@@ -75,7 +75,7 @@ Ui.BarWidget {
     }
     Socket {
         id: meterSocket
-        path: Quickshell.env("XDG_RUNTIME_DIR") + "/multitake.sock"
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/sourceroll.sock"
         onConnectionStateChanged: {
             if (connected) { write('{"command":"subscribe-meter"}\n'); flush() }
             else { root.livePeak = -90; root.desktopPeak = -90 }
@@ -96,7 +96,7 @@ Ui.BarWidget {
     Process {
         id: poll
         property bool received: false
-        command: ["multitake", "status", "--json"]
+        command: ["sourceroll", "status", "--json"]
         onRunningChanged: { if (running) received = false; else if (!received) root.unavailable = true }
         stdout: StdioCollector {
             onStreamFinished: {

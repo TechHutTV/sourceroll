@@ -29,7 +29,7 @@ static QByteArray query(const QString &program, const QStringList &args) {
 }
 
 QString Backend::socketPath() {
-    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/multitake.sock";
+    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/sourceroll.sock";
 }
 
 QVariantList Backend::cameraModes(const QString &device) {
@@ -66,7 +66,7 @@ QVariantList Backend::cameraModes(const QString &device) {
 }
 
 Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
-    m_portalCache(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/multitake-screen-XXXXXX") {
+    m_portalCache(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/sourceroll-screen-XXXXXX") {
     m_screenPreviewProcess.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
     m_screenSelectTimer.setSingleShot(true); m_screenSelectTimer.setInterval(120000);
     connect(&m_screenSelectTimer, &QTimer::timeout, this, [this] {
@@ -101,10 +101,11 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
     m_process.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
     m_configFile = configFile.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.json" : configFile;
     QString migrationError;
+    if (configFile.isEmpty()) importLegacySettings(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/multitake/settings.json", m_configFile, &migrationError);
     if (configFile.isEmpty()) importLegacySettings(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/source-record/settings.json", m_configFile, &migrationError);
     QFile file(m_configFile);
     if (file.open(QIODevice::ReadOnly)) m_settings = QJsonDocument::fromJson(file.read(65536)).object();
-    if (!m_settings.contains("directory")) m_settings["directory"] = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation) + "/Multitake";
+    if (!m_settings.contains("directory")) m_settings["directory"] = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation) + "/Sourceroll";
     if (!m_settings.contains("encoding")) m_settings["encoding"] = "original";
     if (!m_settings.contains("cameraEnabled")) m_settings["cameraEnabled"] = true;
     if (!m_settings.contains("screenEnabled")) m_settings["screenEnabled"] = false;
@@ -500,7 +501,7 @@ bool Backend::importLegacySettings(const QString &legacy, const QString &target,
     const auto data = input.read(65537);
     const auto doc = QJsonDocument::fromJson(data, &parseError);
     if (data.size() > 65536 || parseError.error != QJsonParseError::NoError || !doc.isObject() || doc.object().isEmpty()) return fail(tr("Previous settings are invalid; they were left unchanged."));
-    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail(tr("Could not create the Multitake settings folder."));
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail(tr("Could not create the Sourceroll settings folder."));
     QSaveFile output(target);
     if (!output.open(QIODevice::WriteOnly) || output.write(doc.toJson()) < 0) return fail(tr("Could not import previous settings."));
     if (QFileInfo::exists(target)) { output.cancelWriting(); return true; }

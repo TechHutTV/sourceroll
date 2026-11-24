@@ -184,7 +184,7 @@ bool SessionRecorder::start(const QJsonObject &settings, const QString &portalTo
         sources.append(QJsonObject{{"id", id}, {"kind", video ? "Video" : "Audio"}, {"state", "starting"},
             {"file", id + ".partial." + (video ? "mkv" : "wav")}});
     }
-    m_manifest = {{"schemaVersion", 1}, {"application", "Multitake"}, {"state", "preparing"}, {"ownerPid", double(getpid())},
+    m_manifest = {{"schemaVersion", 1}, {"application", "Sourceroll"}, {"state", "preparing"}, {"ownerPid", double(getpid())},
         {"startedUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}, {"epochRealtimeUs", double(m_epochReal)},
         {"epochMonotonicUs", double(m_epochMono)}, {"sources", sources}, {"settings", settings}};
     m_busy = true; m_state = selected(settings, "screen") && settings["screenTarget"] == "portal" ? "waiting-screen" : "starting"; save();

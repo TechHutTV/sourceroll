@@ -1,9 +1,11 @@
-pkgname=multitake
+pkgname=sourceroll
 pkgver=0.5.0
 pkgrel=1
 pkgdesc='Record screen, camera, microphone and desktop audio as separate synchronized takes'
 arch=('x86_64' 'aarch64')
 license=('MIT')
+conflicts=('multitake')
+replaces=('multitake')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'ffmpeg' 'libpulse' 'gpu-screen-recorder' 'xdg-desktop-portal')
 makedepends=('gcc' 'make')
 source=()
@@ -16,11 +18,11 @@ build() {
 
 package() {
   cd "$startdir/.."
-  install -Dm755 build/multitake "$pkgdir/usr/bin/multitake"
+  install -Dm755 build/sourceroll "$pkgdir/usr/bin/sourceroll"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 "$startdir/multitake.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/multitake.svg"
-  install -Dm644 "$startdir/multitake.desktop" "$pkgdir/usr/share/applications/multitake.desktop"
-  install -Dm644 README.md "$pkgdir/usr/share/doc/multitake/README.md"
-  install -d "$pkgdir/usr/share/multitake/plugin"
-  cp -R plugin/. "$pkgdir/usr/share/multitake/plugin/"
+  install -Dm644 "$startdir/sourceroll.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/sourceroll.svg"
+  install -Dm644 "$startdir/sourceroll.desktop" "$pkgdir/usr/share/applications/sourceroll.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/sourceroll/README.md"
+  install -d "$pkgdir/usr/share/sourceroll/plugin"
+  cp -R plugin/. "$pkgdir/usr/share/sourceroll/plugin/"
 }

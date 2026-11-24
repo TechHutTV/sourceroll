@@ -58,11 +58,11 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Multitake — separate sources, one take\n\nmultitake open\nmultitake status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nmultitake configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nmultitake check [--json]\nmultitake skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Sourceroll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nsourceroll configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
-        const QString directory = QDir::homePath() + "/.codex/skills/multitake";
+        const QString directory = QDir::homePath() + "/.codex/skills/sourceroll";
         QDir().mkpath(directory);
         QFile source(":/SKILL.md");
         if (!source.open(QIODevice::ReadOnly)) return 1;
@@ -83,7 +83,7 @@ static int cli(const QStringList &args) {
         return result["ok"].toBool() ? 0 : 1;
     }
     if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover", "choose-screen"}.contains(command)) {
-        fputs("Unknown command. Run multitake --help.\n", stderr); return 1;
+        fputs("Unknown command. Run sourceroll --help.\n", stderr); return 1;
     }
     QJsonObject request{{"command", command}};
     if (command == "configure") {
@@ -118,13 +118,13 @@ static int cli(const QStringList &args) {
         // A resident must not inherit the CLI's stdout pipe, or bar collectors never finish.
         resident.setStandardInputFile(QProcess::nullDevice());
         resident.setStandardOutputFile(QProcess::nullDevice());
-        const QString stateDir = QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + "/multitake";
+        const QString stateDir = QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + "/sourceroll";
         QDir().mkpath(stateDir);
         resident.setStandardErrorFile(stateDir + "/app.log", QIODevice::Append);
-        if (!resident.startDetached()) { fputs("Could not start Multitake.\n", stderr); return 1; }
+        if (!resident.startDetached()) { fputs("Could not start Sourceroll.\n", stderr); return 1; }
         for (int i = 0; i < 60 && response.isEmpty(); ++i) { QThread::msleep(100); response = send(request); }
     }
-    if (response.isEmpty()) { fputs("Could not reach Multitake.\n", stderr); return 1; }
+    if (response.isEmpty()) { fputs("Could not reach Sourceroll.\n", stderr); return 1; }
     puts(QJsonDocument(response).toJson(QJsonDocument::Compact).constData());
     if (!response["ok"].toBool()) { fputs(qPrintable(response["error"].toString() + '\n'), stderr); return 1; }
     return 0;
@@ -135,13 +135,13 @@ int main(int argc, char *argv[]) {
     const bool gui = command == "open" || command == "--background" || argc == 1;
     if (!gui) {
         QCoreApplication app(argc, argv);
-        app.setApplicationName("multitake");
+        app.setApplicationName("sourceroll");
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("multitake"); app.setApplicationVersion("0.5.0");
-    app.setDesktopFileName("multitake");
-    app.setWindowIcon(QIcon::fromTheme("multitake"));
+    app.setApplicationName("sourceroll"); app.setApplicationVersion("0.5.0");
+    app.setDesktopFileName("sourceroll");
+    app.setWindowIcon(QIcon::fromTheme("sourceroll"));
     app.setQuitOnLastWindowClosed(false);
     // Deliver termination on Qt's event loop so the recorder can finish its file.
     if (pipe2(terminationPipe, O_NONBLOCK | O_CLOEXEC) != 0) return 1;

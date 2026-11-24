@@ -1,16 +1,16 @@
-# Multitake bar widget
+# Sourceroll bar widget
 
-An Omarchy `bar-widget` for the separately installed Multitake desktop recorder.
+An Omarchy `bar-widget` for the separately installed Sourceroll desktop recorder.
 `BarWidget.qml` owns the bar button and IPC clients; `Panel.qml` uses Omarchy's
 `Panel`, `KeyboardPanel`, and `PanelKeyCatcher` for the popup lifecycle.
 The popup is part of the bar widget, so it does not declare a separate panel kind.
 
 ## Install and use
 
-Install the Multitake Arch package first, then run `bin/install-plugin` from the
+Install the Sourceroll Arch package first, then run `bin/install-plugin` from the
 application repository. The installer validates this folder, backs up existing
 widget files and bar configuration, preserves placement during the Source Record
-rename, enables `local.multitake`, and restarts the existing Omarchy shell.
+rename, enables `local.sourceroll`, and restarts the existing Omarchy shell.
 It does not launch another Quickshell instance.
 
 Click for Screen / Camera monitoring, audio meters, source switches, and record/stop. Monitor tabs choose what to watch; the source switches choose what to save. Enabling Screen opens the native picker and a live preview before recording; Choose screen/window changes the selection while idle.
@@ -18,19 +18,19 @@ Middle-click starts/stops a take; right-click opens the app. Escape closes the
 popup. Omarchy shell summon/hide and neighbouring panel switching are supported.
 
 ```sh
-omarchy-shell shell summon local.multitake '{}'
-omarchy-shell shell hide local.multitake
-omarchy bar move local.multitake --section right
+omarchy-shell shell summon local.sourceroll '{}'
+omarchy-shell shell hide local.sourceroll
+omarchy bar move local.sourceroll --section right
 ```
 
 ## Dependencies and permissions
 
-Requires Omarchy/Quattro and `multitake` on PATH. Multitake requires Qt 6,
+Requires Omarchy/Quattro and `sourceroll` on PATH. Sourceroll requires Qt 6,
 FFmpeg/ffprobe, PulseAudio-compatible audio (including PipeWire-Pulse), GPU Screen
 Recorder, and the Wayland desktop portal. The native portal handles screen/window
 sharing permission; this plugin does not replace its picker.
 
-The widget uses argument-array CLI calls and the user-only local Multitake socket.
+The widget uses argument-array CLI calls and the user-only local Sourceroll socket.
 It polls recording status, subscribes to audio peaks, and subscribes to screen and camera
 frames only while the popup is open. Preview and recording share the camera. Screen monitoring decodes a disposable copy of the recorded stream. Idle screen selection previews the approved source without saving video; the portal may restore the selection for recording.
 Opening the popup starts idle monitoring; recording starts only on an explicit
@@ -48,11 +48,11 @@ installed shell. Quattro's dynamic loader and theme properties are reported as
 informational by qmllint; native shell lifecycle checks are also required.
 
 ```sh
-omarchy plugin disable local.multitake
-omarchy plugin remove local.multitake
+omarchy plugin disable local.sourceroll
+omarchy plugin remove local.sourceroll
 ```
 
 Removing the widget keeps the app, recordings, settings, and migration backups.
-The `local.multitake` ID is for local development. Marketplace publication needs
+The `local.sourceroll` ID is for local development. Marketplace publication needs
 a permanent namespaced ID and a public plugin repository with this folder's
 manifest, README, license, QML, model, and catalogs at its root.

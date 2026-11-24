@@ -1,14 +1,14 @@
-![Multitake](docs/screenshot.png)
+![Sourceroll](docs/screenshot.png)
 
-# Multitake
+# Sourceroll
 
 A focused recorder for Omarchy. Select a screen or window, camera, microphone, and desktop audio, then record the enabled sources together. Each source gets its own file for editing afterward. The app and bar widget provide camera preview, audio meters, source switches, recording status, and one start/stop control.
 
 ## Record a take
 
-Search **Multitake** in the app launcher (Super + Space). Enable the sources you need and select their devices. Enabling the Screen source opens the native Wayland screen/window chooser and starts a live preview before recording. Click an empty Screen preview pane to choose a source directly, including in Both view. Use **Choose screen/window** to change an existing selection. Recording asks the portal to restore that selection; the portal can request approval again if restoration is unavailable or permission has changed. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
+Search **Sourceroll** in the app launcher (Super + Space). Enable the sources you need and select their devices. Enabling the Screen source opens the native Wayland screen/window chooser and starts a live preview before recording. Click an empty Screen preview pane to choose a source directly, including in Both view. Use **Choose screen/window** to change an existing selection. Recording asks the portal to restore that selection; the portal can request approval again if restoration is unavailable or permission has changed. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
 
-The system chooser still uses snapshots. Multitake leaves the shared picker unchanged and shows a live screen preview after you approve a source. Choosing or previewing a screen does not save a recording.
+The system chooser still uses snapshots. Sourceroll leaves the shared picker unchanged and shows a live screen preview after you approve a source. Choosing or previewing a screen does not save a recording.
 
 The app shows preparation, screen-selection, recording, stopping, and file-validation states. A take is reported as saved only after its files pass validation. Settings are locked during capture and finalization. Turning a source off excludes it from the take; it does not mute or modify the system device.
 
@@ -30,7 +30,7 @@ Original camera mode preserves supported MJPEG/H.264 streams without re-encoding
 
 ## Timing and editing
 
-Source preparation and permission selection take different amounts of time. Multitake records the camera and audio device timestamps and the screen recorder's first-frame timestamp, maps them to a common monotonic clock, and saves each source's start offset in `session.json`. Files use local media timestamps, and `timeline.otio` places validated clips on separate tracks with the measured offsets.
+Source preparation and permission selection take different amounts of time. Sourceroll records the camera and audio device timestamps and the screen recorder's first-frame timestamp, maps them to a common monotonic clock, and saves each source's start offset in `session.json`. Files use local media timestamps, and `timeline.otio` places validated clips on separate tracks with the measured offsets.
 
 OpenTimelineIO support varies by editor. The JSON manifest remains available for editors or scripts that do not import OTIO. These offsets describe capture timing; camera processing and microphone DSP can introduce physical latency that needs calibration or adjustment in an editor. Use a visible/audible synchronization cue when frame-accurate alignment matters.
 
@@ -55,7 +55,7 @@ The app follows Omarchy's palette and control tokens live, including light/dark 
 
 If an enabled source exits or the camera stops delivering frames, all sources are asked to stop. Low disk space also stops the take. Workers are tracked individually; unrelated recorder processes are never killed. Partial files and metadata are preserved when a source fails. Source files are validated with ffprobe before being renamed, and the take reports incomplete if validation fails.
 
-After an interrupted run, choose **Recover interrupted take** in the app or run `multitake recover --json`. Recovery checks the most recent incomplete take in the configured output folder, preserves unreadable partial files, and rebuilds timing/timeline data when enough metadata exists. It never overwrites a final file. A normal quit waits for capture finalization; after a crash, parent-death signals ask workers to finalize and recovery handles the remaining metadata.
+After an interrupted run, choose **Recover interrupted take** in the app or run `sourceroll recover --json`. Recovery checks the most recent incomplete take in the configured output folder, preserves unreadable partial files, and rebuilds timing/timeline data when enough metadata exists. It never overwrites a final file. A normal quit waits for capture finalization; after a crash, parent-death signals ask workers to finalize and recovery handles the remaining metadata.
 
 ## Build and install
 
@@ -70,27 +70,27 @@ bin/install
 
 `bin/install` builds an Arch package and installs the user widget. Password entry uses the native terminal prompt. Plugin installation backs up previous files and bar configuration, then restarts the shell to clear cached QML. The recorder runs separately, so a shell restart keeps active takes recording. No files under `/usr/share/omarchy` are edited.
 
-Settings are saved atomically in `~/.config/multitake/settings.json`. New installations default to `~/Videos/Multitake`. Existing Source Record settings are imported once when no Multitake settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
+Settings are saved atomically in `~/.config/sourceroll/settings.json`. New installations default to `~/Videos/Sourceroll`. Existing Source Record settings are imported once when no Sourceroll settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
 
 There is one resident app per user, protected by a lock and a user-only local socket. The widget starts it in the background as needed. There is no network service, account, telemetry, or automatic recording at login.
 
-The user plugin lives in `plugin/`, with its own [installation, dependency, and removal notes](plugin/README.md). It uses Omarchy's bar-widget contract and standard panel lifecycle. `local.multitake` is a local development ID. Marketplace submission would require a permanent namespaced ID and a public plugin repository with `manifest.json` at its root; this app repository is not currently a marketplace submission.
+The user plugin lives in `plugin/`, with its own [installation, dependency, and removal notes](plugin/README.md). It uses Omarchy's bar-widget contract and standard panel lifecycle. `local.sourceroll` is a local development ID. Marketplace submission would require a permanent namespaced ID and a public plugin repository with `manifest.json` at its root; this app repository is not currently a marketplace submission.
 
 ## Command line
 
 ```sh
-multitake open
-multitake devices --json
-multitake settings --json
-multitake configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json
-multitake configure --screen-target portal --screen-fps 60 --screen-quality very_high --json
-multitake choose-screen --json
-multitake status --json
-multitake start --json
-multitake stop --json
-multitake recover --json
-multitake check --json
-multitake skill install
+sourceroll open
+sourceroll devices --json
+sourceroll settings --json
+sourceroll configure --screen-enabled true --camera-enabled true --microphone-enabled true --desktop-enabled false --json
+sourceroll configure --screen-target portal --screen-fps 60 --screen-quality very_high --json
+sourceroll choose-screen --json
+sourceroll status --json
+sourceroll start --json
+sourceroll stop --json
+sourceroll recover --json
+sourceroll check --json
+sourceroll skill install
 ```
 
 Use device and mode IDs returned by `devices`. `start` acknowledges preparation; wait for `state: recording` before assuming every source is ready. `stop` begins coordinated stopping and validation; wait for `recording: false` and inspect `state`, `error`, and `sources` for the result. Screen selection may require an interactive native picker. CLI inspection needs no display client, but capture needs a running desktop session.
@@ -100,11 +100,11 @@ Use device and mode IDs returned by `devices`. `start` acknowledges preparation;
 Stop the take and quit the app with Q, then:
 
 ```sh
-omarchy plugin disable local.multitake
-sudo pacman -R multitake
+omarchy plugin disable local.sourceroll
+sudo pacman -R sourceroll
 ```
 
-Remove `~/.config/omarchy/plugins/local.multitake` if no longer wanted. Settings, recording folders, and migration backups are kept.
+Remove `~/.config/omarchy/plugins/local.sourceroll` if no longer wanted. Settings, recording folders, and migration backups are kept.
 
 ## Current scope
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "local.multitake",
-  "name": "Multitake",
+  "id": "local.sourceroll",
+  "name": "Sourceroll",
   "version": "0.5.0",
   "author": "Brandon",
   "description": "Record separate screen, camera, microphone and desktop audio sources with live monitoring",
@@ -12,8 +12,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Multitake",
-    "description": "Multitake monitoring and source controls",
+    "displayName": "Sourceroll",
+    "description": "Sourceroll monitoring and source controls",
     "category": "Media",
     "allowMultiple": false,
     "defaultSection": "right"

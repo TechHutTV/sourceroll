@@ -7,7 +7,7 @@ import "Model.js" as Model
 
 Ui.Panel {
     id: root
-    moduleName: "local.multitake"
+    moduleName: "local.sourceroll"
     manageIpc: false
     property var anchorItem: null
     property var hostWidget: null
@@ -44,7 +44,7 @@ Ui.Panel {
                 id: panelContent
                 width: parent.width
                 spacing: Style.space(12)
-                Text { textFormat: Text.PlainText; text: "Multitake"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
+                Text { textFormat: Text.PlainText; text: "Sourceroll"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
                 RowLayout {
                     Layout.fillWidth: true
                     Text { text: strings.t("monitor"); textFormat: Text.PlainText; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body }

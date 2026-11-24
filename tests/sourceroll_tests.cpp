@@ -37,8 +37,8 @@ public:
     QVariantList desktopSources() const { return {QVariantMap{{"id", "desktop"}, {"label", "Desktop audio"}}}; }
     double desktopPeakDb() const { return -28; }
     QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
-    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Multitake"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
-    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Multitake/take-demo"}}; }
+    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Sourceroll"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
+    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Sourceroll/take-demo"}}; }
     int frameNumber() const { return 1; }
     double peakDb() const { return -18; }
     Q_INVOKABLE void setWindowVisible(bool) {}
@@ -250,7 +250,7 @@ private slots:
         QFile file(dir.filePath("settings.json")); QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).object()["audio"].toString(), "none");
         QVERIFY(!backend.setSetting("unknown", "value"));
-        QVERIFY(backend.setSetting("camera", "/dev/multitake-does-not-exist"));
+        QVERIFY(backend.setSetting("camera", "/dev/sourceroll-does-not-exist"));
         QVERIFY(!backend.start()); QCOMPARE(backend.status()["state"].toString(), "error");
         QVERIFY(!backend.status()["recording"].toBool());
     }
@@ -324,4 +324,4 @@ private slots:
 };
 
 QTEST_MAIN(RecorderTests)
-#include "multitake_tests.moc"
+#include "sourceroll_tests.moc"

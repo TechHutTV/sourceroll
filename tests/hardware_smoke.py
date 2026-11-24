@@ -10,7 +10,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--record', action='store_true', help='Allow a two-second camera/microphone capture')
-parser.add_argument('--binary', default=str(Path(__file__).resolve().parents[1] / 'build/multitake'))
+parser.add_argument('--binary', default=str(Path(__file__).resolve().parents[1] / 'build/sourceroll'))
 args = parser.parse_args()
 if not args.record:
     parser.error('Pass --record to authorize the hardware test')
@@ -23,9 +23,9 @@ def quit_resident():
     state = call('status')
     if not state.get('running'):
         return
-    lock = Path(os.environ['XDG_RUNTIME_DIR']) / 'multitake.sock.lock'
+    lock = Path(os.environ['XDG_RUNTIME_DIR']) / 'sourceroll.sock.lock'
     pid = int(lock.read_text().splitlines()[0])
-    assert Path(f'/proc/{pid}/comm').read_text().strip().startswith('multitake')
+    assert Path(f'/proc/{pid}/comm').read_text().strip().startswith('sourceroll')
     os.kill(pid, signal.SIGTERM)
     for _ in range(100):
         time.sleep(.2)
@@ -35,9 +35,9 @@ def quit_resident():
     raise AssertionError('Resident did not finalize and quit')
 
 if call('status')['running']:
-    raise SystemExit('Quit Multitake first; the test will not disturb an existing session.')
+    raise SystemExit('Quit Sourceroll first; the test will not disturb an existing session.')
 original = call('settings')['settings']
-with tempfile.TemporaryDirectory(prefix='multitake-smoke-') as directory:
+with tempfile.TemporaryDirectory(prefix='sourceroll-smoke-') as directory:
     try:
         call('configure', '--camera-enabled', 'true', '--microphone-enabled', 'true',
              '--screen-enabled', 'false', '--desktop-enabled', 'false', '--encoding', 'h264', '--directory', directory)
