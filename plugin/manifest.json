@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "local.source-record",
+  "name": "Source Record",
+  "version": "0.1.0",
+  "author": "Brandon",
+  "description": "Independent camera recorder with live recording status and controls",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "BarWidget.qml"},
+  "barWidget": {"displayName": "Source Record", "description": "Camera recording status and controls", "category": "Media", "allowMultiple": false, "defaultSection": "right"}
+}

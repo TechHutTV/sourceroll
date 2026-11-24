@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Source Record
+Name[da]=Source Record
+Comment=Record your camera separately with FFmpeg
+Comment[da]=Optag dit kamera separat med FFmpeg
+Exec=source-record open
+Icon=source-record
+Terminal=false
+Categories=AudioVideo;Recorder;
+Keywords=camera;webcam;record;ffmpeg;source;
+StartupWMClass=source-record

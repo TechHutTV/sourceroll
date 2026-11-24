@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+omarchy plugin validate "$ROOT/plugin"
+DEST="$HOME/.config/omarchy/plugins/local.source-record"
+if [ -d "$DEST" ]; then
+    cp -a "$DEST" "$DEST.backup-$(date +%Y%m%d-%H%M%S)"
+fi
+mkdir -p "$DEST"
+cp -R "$ROOT/plugin/." "$DEST/"
+omarchy-shell shell rescanPlugins
+omarchy plugin enable local.source-record --section right --before omarchy.tray

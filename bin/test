@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build/tests"
+cd "$ROOT/build/tests"
+qmake6 "$ROOT/tests/source-record_tests.pro"
+make -j"$(nproc)"
+QT_QPA_PLATFORM=offscreen ./source-record_tests
+python3 "$ROOT/tests/plugin_test.py"

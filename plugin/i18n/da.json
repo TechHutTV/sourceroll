@@ -1,0 +1,10 @@
+{
+  "bar.tooltip": "Source Record · klik for styring · midterklik optager / stopper · højreklik åbner forhåndsvisning",
+  "unavailable": "Optageren er utilgængelig. Åbn Source Record for at kontrollere den.",
+  "recording": "Optager · %1",
+  "idle": "Kameraoptageren er klar",
+  "start": "Start kameraoptagelse",
+  "stop": "Stop og gem",
+  "open": "Åbn forhåndsvisning og indstillinger",
+  "independent": "Kun kameraoptagelse. OBS styres separat."
+}

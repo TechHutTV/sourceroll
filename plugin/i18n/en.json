@@ -1,0 +1,10 @@
+{
+  "bar.tooltip": "Source Record · click for controls · middle-click to record / stop · right-click for preview",
+  "unavailable": "Recorder unavailable. Open Source Record to check it.",
+  "recording": "Recording · %1",
+  "idle": "Camera recorder ready",
+  "start": "Start camera recording",
+  "stop": "Stop and save",
+  "open": "Open preview and settings",
+  "independent": "Camera recording only. OBS is controlled separately."
+}
