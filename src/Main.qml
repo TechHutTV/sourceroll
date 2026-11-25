@@ -21,6 +21,8 @@ ApplicationWindow {
     property var state: backend.status
     property var prefs: backend.settings
     property string monitorView: "both"
+    // Follows the saved choice; until one is made, narrow windows stack automatically.
+    property bool monitorStacked: prefs.monitorLayout === "stacked" || (prefs.monitorLayout !== "side" && monitorGrid.width < 620)
     property bool helpVisible: false
     property bool allowQuit: false
     property bool busy: state.recording || state.state === "stopping" || state.state === "validating"
@@ -212,10 +214,17 @@ ApplicationWindow {
                         RecordButton { objectName: "monitorScreen"; text: qsTr("Screen"); highlighted: win.monitorView === "screen"; onClicked: { win.monitorView = "screen"; if (win.prefs.screenEnabled && !win.state.screenSelected && !win.busy && !win.state.screenSelecting) backend.chooseScreen() } }
                         RecordButton { objectName: "monitorCamera"; text: qsTr("Camera"); highlighted: win.monitorView === "camera"; onClicked: win.monitorView = "camera" }
                         RecordButton { objectName: "monitorBoth"; text: qsTr("Both"); highlighted: win.monitorView === "both"; onClicked: win.monitorView = "both" }
+                        RecordButton {
+                            objectName: "monitorLayout"; visible: win.monitorView === "both"
+                            text: win.monitorStacked ? qsTr("Side by side") : qsTr("Stack")
+                            Accessible.description: qsTr("Switch the monitor layout")
+                            onClicked: backend.setSetting("monitorLayout", win.monitorStacked ? "side" : "stacked")
+                        }
                     }
                     GridLayout {
+                        id: monitorGrid
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 240
-                        columns: width >= 620 ? 2 : 1
+                        columns: win.monitorStacked ? 1 : 2
                         rowSpacing: 8; columnSpacing: 8
                         SourceMonitor {
                             objectName: "screenMonitor"

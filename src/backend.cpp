@@ -346,6 +346,11 @@ bool Backend::saveSettings() {
 }
 
 bool Backend::setSetting(const QString &key, const QVariant &value) {
+    // A display-only preference: it may change mid-recording and must not restart the preview.
+    if (key == "monitorLayout") {
+        if (m_shuttingDown || !QStringList{"side", "stacked"}.contains(value.toString())) return false;
+        m_settings[key] = value.toString(); emit settingsChanged(); return saveSettings();
+    }
     if (m_shuttingDown || m_session->busy() || m_state == "stopping") return false;
     if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "screenQuality", "desktopAudio"}.contains(key)) return false;
     if (key == "screenQuality" && !QStringList{"high", "very_high", "ultra"}.contains(value.toString())) return false;
