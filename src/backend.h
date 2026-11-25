@@ -3,14 +3,15 @@
 #include <QObject>
 #include <QProcess>
 #include <QTimer>
-#include <QElapsedTimer>
 #include <QVariantList>
 #include <QJsonObject>
 #include <QImage>
+#include <QHash>
 #include <optional>
-#include "screenmonitor.h"
 #include <QTemporaryDir>
 class SessionRecorder;
+class CameraFeed;
+class ScreenFeed;
 
 class Backend : public QObject {
     Q_OBJECT
@@ -26,35 +27,45 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantList screens READ screens NOTIFY devicesChanged)
     Q_PROPERTY(QVariantList desktopSources READ desktopSources NOTIFY devicesChanged)
 public:
-    explicit Backend(const QString &configFile = {}, QObject *parent = nullptr);
+    // A config file or capture programs are only given by tests; such a backend
+    // also keeps its notices off the desktop.
+    explicit Backend(const QString &configFile = {}, QObject *parent = nullptr,
+        const QString &screenProgram = "gpu-screen-recorder", const QString &cameraProgram = "ffmpeg");
     ~Backend() override;
     QVariantList cameras() const { return m_cameras; }
     QVariantList microphones() const { return m_microphones; }
     QVariantList modes() const;
-    QVariantMap settings() const { return m_settings.toVariantMap(); }
+    // Stored settings, plus the earlier single-source keys for the first screen and camera.
+    QVariantMap settings() const;
     QVariantMap status() const;
-    int frameNumber() const { return m_frameNumber; }
+    int frameNumber() const;
+    int screenFrameNumber() const;
     double peakDb() const { return m_peak; }
     double desktopPeakDb() const { return m_desktopPeak; }
     QVariantList screens() const { return m_screens; }
     QVariantList desktopSources() const { return m_desktopSources; }
-    QImage previewImage() const { return m_image; }
-    QByteArray previewJpeg() const { return m_previewJpeg; }
-    int screenFrameNumber() const { return m_screenMonitor.frameNumber(); }
-    QImage screenImage() const { return m_screenMonitor.image(); }
-    QByteArray screenJpeg() const { return m_screenMonitor.jpeg(); }
+    // The live preview of one video source, by its id.
+    Q_INVOKABLE int frame(const QString &source) const;
+    QImage sourceImage(const QString &source) const;
+    QByteArray sourceJpeg(const QString &source) const;
+    QString firstSource(const QString &kind) const;
     void addPreviewClient();
     void removePreviewClient();
     QJsonObject handle(const QJsonObject &request);
     static QVariantList cameraModes(const QString &device);
-    static QStringList ffmpegArguments(const QJsonObject &settings, const QString &output, bool recording);
     static bool validSettings(const QJsonObject &settings, QString *error);
     static QString socketPath();
     static bool omaControlOpen(const QByteArray &layers);
     static std::optional<double> parsePeak(const QByteArray &line);
     static bool importLegacySettings(const QString &legacy, const QString &target, QString *error = nullptr);
     Q_INVOKABLE void refreshDevices();
+    // Recording-wide settings. The earlier keys for "the" screen and camera
+    // (camera, mode, screenTarget, ...) still work and act on the first of each.
     Q_INVOKABLE bool setSetting(const QString &key, const QVariant &value);
+    // Returns the new source's id, or nothing when it cannot be added.
+    Q_INVOKABLE QString addSource(const QString &kind);
+    Q_INVOKABLE bool removeSource(const QString &id);
+    Q_INVOKABLE bool setSourceSetting(const QString &id, const QString &key, const QVariant &value);
     Q_INVOKABLE bool start();
     Q_INVOKABLE void stop();
     Q_INVOKABLE void shutdown();
@@ -63,55 +74,48 @@ public:
     Q_INVOKABLE void openFolder();
     Q_INVOKABLE void dismissError();
     Q_INVOKABLE bool recoverSession();
-    Q_INVOKABLE bool chooseScreen();
+    // Opens the picker for a screen source; without an id, for the first one.
+    Q_INVOKABLE bool chooseScreen(const QString &id = {});
 signals:
     void devicesChanged();
     void settingsChanged();
     void statusChanged();
+    void sourceFrame(const QString &source, int number);
     void frameReady();
     void screenFrameReady();
     void peakChanged();
     void openRequested();
 private:
-    void launch(bool recording);
-    void consumeVideo();
-    void consumeMessages();
-    void finish(int code, QProcess::ExitStatus exitStatus);
-    void stopProcess();
-    void stopScreenPreview();
-    void startScreenPreview(bool choose);
+    void launch();
+    void syncFeeds();
+    void stopPreviews();
+    void stopScreenPreviews();
+    void startScreenPreviews();
+    bool setKindEnabled(const QString &kind, bool enabled);
+    bool viewed() const { return m_visible || m_previewClients > 0; }
+    QString unusedCamera(const QJsonArray &sources) const;
+    QString defaultMode(const QString &device, bool preferFullHd) const;
+    QVariantList modesOf(const QString &device) const;
+    QString label(const QString &id) const;
     bool saveSettings();
     void fail(const QString &message);
-    QProcess m_process, m_displayQuery;
+    QProcess m_displayQuery;
     QTimer m_displayPoll;
     bool m_displaySettingsOpen = false;
     QString m_lastNotice;
-    ScreenMonitor m_screenMonitor;
-    QProcess m_screenPreviewProcess;
     QTemporaryDir m_portalCache;
-    QByteArray m_screenPreviewLog;
-    QString m_screenSelectionError;
-    bool m_screenSelected = false, m_screenPreviewStopping = false, m_screenPreviewHasData = false;
     SessionRecorder *m_session = nullptr;
+    // One feed per video source, by source id.
+    QHash<QString, CameraFeed *> m_cameraFeeds;
+    QHash<QString, ScreenFeed *> m_screenFeeds;
     QTimer m_tick;
-    QTimer m_meter;
     QTimer m_restart;
-    QTimer m_watchdog;
-    QTimer m_screenSelectTimer;
-    QElapsedTimer m_elapsed;
-    QElapsedTimer m_lastFrame;
-    QString m_configFile;
+    QString m_configFile, m_screenProgram, m_cameraProgram;
     QJsonObject m_settings;
     QVariantList m_cameras, m_microphones, m_screens, m_desktopSources;
-    QByteArray m_frames, m_messages, m_log;
-    QByteArray m_previewJpeg;
-    QImage m_image;
-    QString m_state = "idle", m_error, m_output, m_lastOutput, m_cameraSource = "camera";
+    QString m_error;
     double m_peak = -90;
-    double m_pendingPeak = -90;
     double m_desktopPeak = -90;
-    qint64 m_recordedMs = 0;
-    int m_frameNumber = 0;
     int m_previewClients = 0;
-    bool m_recording = false, m_visible = false, m_stopping = false, m_shuttingDown = false;
+    bool m_visible = false, m_shuttingDown = false;
 };

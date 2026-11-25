@@ -1,5 +1,8 @@
 #include "backend.h"
+#include "camerafeed.h"
+#include "screenfeed.h"
 #include "session.h"
+#include "sources.h"
 
 #include <QDateTime>
 #include <QDBusMessage>
@@ -13,6 +16,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QUrl>
@@ -85,40 +89,9 @@ QVariantList Backend::cameraModes(const QString &device) {
     return result;
 }
 
-Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
-    m_portalCache(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/sourceroll-screen-XXXXXX") {
-    m_screenPreviewProcess.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
-    m_screenSelectTimer.setSingleShot(true); m_screenSelectTimer.setInterval(120000);
-    connect(&m_screenSelectTimer, &QTimer::timeout, this, [this] {
-        if (!m_screenPreviewHasData && m_screenPreviewProcess.state() != QProcess::NotRunning) {
-            stopScreenPreview(); m_screenSelectionError = tr("Screen selection timed out. Choose the source again."); emit statusChanged();
-        }
-    });
-    connect(&m_screenPreviewProcess, &QProcess::readyReadStandardOutput, this, [this] {
-        const auto bytes = m_screenPreviewProcess.readAllStandardOutput();
-        if (!bytes.isEmpty() && !m_screenPreviewStopping) {
-            m_screenSelectTimer.stop(); m_screenPreviewHasData = true; m_screenSelected = true; m_screenMonitor.feed(bytes); emit statusChanged();
-        }
-    });
-    connect(&m_screenPreviewProcess, &QProcess::readyReadStandardError, this, [this] {
-        // Portal restore tokens are capabilities, so do not retain the recorder's token diagnostics.
-        const auto data = m_screenPreviewProcess.readAllStandardError();
-        for (const auto &line : data.split('\n')) if (!line.contains("token") && (line.contains("error") || line.contains("failed") || line.contains("denied"))) m_screenPreviewLog = (m_screenPreviewLog + line + '\n').right(2000);
-    });
-    connect(&m_screenPreviewProcess, &QProcess::finished, this, [this](int code) {
-        m_screenSelectTimer.stop();
-        if (!m_screenPreviewStopping && !m_shuttingDown) {
-            m_screenMonitor.stop();
-            m_screenSelectionError = tr("Screen sharing ended or was cancelled. Choose the source again. %1").arg(QString::fromUtf8(m_screenPreviewLog.right(1200)));
-            if (code) m_screenSelected = false;
-            emit statusChanged();
-        }
-    });
-    connect(&m_screenPreviewProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { m_screenSelectionError = tr("Screen preview could not start: %1").arg(m_screenPreviewProcess.errorString()); m_screenMonitor.stop(); emit statusChanged(); }
-    });
-    // If the app crashes, ask only its own child to finalize rather than orphaning capture.
-    m_process.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); });
+Backend::Backend(const QString &configFile, QObject *parent, const QString &screenProgram, const QString &cameraProgram) : QObject(parent),
+    m_portalCache(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/sourceroll-screen-XXXXXX"),
+    m_screenProgram(screenProgram), m_cameraProgram(cameraProgram) {
     m_configFile = configFile.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.json" : configFile;
     QString migrationError;
     if (configFile.isEmpty()) importLegacySettings(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/multitake/settings.json", m_configFile, &migrationError);
@@ -126,62 +99,37 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
     QFile file(m_configFile);
     if (file.open(QIODevice::ReadOnly)) m_settings = QJsonDocument::fromJson(file.read(65536)).object();
     if (!m_settings.contains("directory")) m_settings["directory"] = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation) + "/Sourceroll";
-    if (!m_settings.contains("encoding")) m_settings["encoding"] = "original";
-    if (!m_settings.contains("cameraEnabled")) m_settings["cameraEnabled"] = true;
-    if (!m_settings.contains("screenEnabled")) m_settings["screenEnabled"] = false;
     if (!m_settings.contains("microphoneEnabled")) m_settings["microphoneEnabled"] = m_settings["audio"] != "none";
     if (!m_settings.contains("desktopEnabled")) m_settings["desktopEnabled"] = false;
-    if (!m_settings.contains("screenTarget")) m_settings["screenTarget"] = "portal";
-    if (!m_settings.contains("screenFps")) m_settings["screenFps"] = 60;
-    if (!m_settings.contains("screenQuality")) m_settings["screenQuality"] = "very_high";
-    m_session = new SessionRecorder(this);
-    connect(m_session, &SessionRecorder::screenStarting, &m_screenMonitor, [this] { m_screenMonitor.start(); });
-    connect(m_session, &SessionRecorder::screenStopped, &m_screenMonitor, [this] { m_screenMonitor.stop(); });
-    connect(m_session, &SessionRecorder::screenData, this, [this](const QString &, const QByteArray &bytes) { m_screenMonitor.feed(bytes); if (!bytes.isEmpty()) m_screenSelected = true; });
-    connect(&m_screenMonitor, &ScreenMonitor::frameReady, this, &Backend::screenFrameReady);
+    // Earlier settings described one screen and one camera. They become the
+    // first two entries of the list, and are written back on the next change.
+    m_settings = Sources::migrated(m_settings);
+    m_session = new SessionRecorder(this, m_screenProgram);
+    syncFeeds();
+    connect(m_session, &SessionRecorder::screenStarting, this, [this](const QString &id) { if (const auto feed = m_screenFeeds.value(id)) feed->monitor().start(); });
+    connect(m_session, &SessionRecorder::screenStopped, this, [this](const QString &id) { if (const auto feed = m_screenFeeds.value(id)) feed->monitor().stop(); });
+    connect(m_session, &SessionRecorder::screenData, this, [this](const QString &id, const QByteArray &bytes) {
+        const auto feed = m_screenFeeds.value(id);
+        if (!feed) return;
+        feed->monitor().feed(bytes);
+        if (!bytes.isEmpty()) feed->markSelected();
+    });
     connect(m_session, &SessionRecorder::changed, this, &Backend::statusChanged);
     connect(m_session, &SessionRecorder::levels, this, [this](double mic, double desktop) { m_peak = mic; m_desktopPeak = desktop; emit peakChanged(); });
-    connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &source, const QString &file) {
-        m_cameraSource = source;
-        m_lastFrame.invalidate(); m_frameNumber = 0; m_image = {}; m_previewJpeg.clear(); emit frameReady();
-        m_output = file; m_recording = true; m_state = "starting"; m_frames.clear(); m_messages.clear(); m_log.clear();
-        m_process.start("ffmpeg", ffmpegArguments(m_settings, file, true)); m_watchdog.start();
+    connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &id, const QString &file) {
+        if (const auto feed = m_cameraFeeds.value(id)) feed->record(Sources::find(Sources::list(m_settings), id), file);
+        else m_session->cameraFinished(id, 1, tr("Its camera source no longer exists."));
     });
-    connect(m_session, &SessionRecorder::cameraStopRequested, this, [this](const QString &) {
-        if (m_process.state() != QProcess::NotRunning) { m_process.write("q\n");
-            QTimer::singleShot(8000, this, [this] { if (m_stopping || m_session->busy()) { if (m_process.state() != QProcess::NotRunning) m_process.kill(); } });
-        }
-    });
-    connect(m_session, &SessionRecorder::finished, this, [this] { m_recording = false; m_state = "idle"; if (!m_shuttingDown && (m_visible || m_previewClients)) { m_restart.start(); if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false); } });
-    connect(&m_process, &QProcess::readyReadStandardOutput, this, &Backend::consumeVideo);
-    connect(&m_process, &QProcess::readyReadStandardError, this, &Backend::consumeMessages);
-    connect(&m_process, &QProcess::finished, this, &Backend::finish);
-    connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { if (m_session->busy()) { m_session->cameraFinished(m_cameraSource, 1, m_process.errorString()); return; } m_recording = false; fail(tr("FFmpeg could not start: %1").arg(m_process.errorString())); }
-    });
+    connect(m_session, &SessionRecorder::cameraStopRequested, this, [this](const QString &id) { if (const auto feed = m_cameraFeeds.value(id)) feed->requestStop(); });
+    connect(m_session, &SessionRecorder::finished, this, [this] { if (!m_shuttingDown && viewed()) m_restart.start(); });
     m_tick.setInterval(250);
-    connect(&m_tick, &QTimer::timeout, this, [this] {
-        if ((m_state == "recording" || m_state == "preview") && m_lastFrame.isValid() && m_lastFrame.elapsed() > 6000) {
-            if (m_session->busy()) m_session->stop(tr("The camera stopped delivering frames."));
-            else { stopProcess(); fail(tr("The camera stopped delivering frames. Check the device before recording again.")); }
-        }
-        emit statusChanged();
-    });
+    connect(&m_tick, &QTimer::timeout, this, &Backend::statusChanged);
     m_tick.start();
     m_restart.setSingleShot(true); m_restart.setInterval(250);
-    connect(&m_restart, &QTimer::timeout, this, [this] { if ((m_visible || m_previewClients > 0) && !m_session->busy()) launch(false); });
-    m_watchdog.setInterval(10000);
-    m_watchdog.setSingleShot(true);
-    connect(&m_watchdog, &QTimer::timeout, this, [this] {
-        if (m_state == "starting" || m_state == "preview-starting") {
-            if (m_session->busy()) { m_session->stop(tr("The camera did not deliver its first frame.")); return; }
-            stopProcess();
-            fail(tr("The camera did not deliver a frame. Check that it is connected and not in use by another app."));
-        }
-    });
+    connect(&m_restart, &QTimer::timeout, this, [this] { if (viewed() && !m_session->busy()) launch(); });
     m_displayPoll.setInterval(1000);
     connect(&m_displayPoll, &QTimer::timeout, this, [this] {
-        if (!m_session->busy() || !m_settings["screenEnabled"].toBool()) { m_displaySettingsOpen = false; return; }
+        if (!m_session->busy() || Sources::enabled(m_settings, "screen").isEmpty()) { m_displaySettingsOpen = false; return; }
         if (m_displayQuery.state() != QProcess::NotRunning) { m_displayQuery.kill(); return; }
         m_displayQuery.start("hyprctl", {"-j", "layers"});
     });
@@ -192,7 +140,7 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
     });
     m_displayPoll.start();
     // Notifications remain visible when the recording window and bar popup are hidden.
-    connect(this, &Backend::statusChanged, this, [this] {
+    if (configFile.isEmpty()) connect(this, &Backend::statusChanged, this, [this] {
         const auto s = status();
         QString notice = s["error"].toString();
         if (notice.isEmpty()) notice = s["warning"].toString();
@@ -216,15 +164,86 @@ void Backend::shutdown() {
     if (m_shuttingDown) return;
     m_shuttingDown = true;
     m_displayPoll.stop(); m_displayQuery.kill(); m_displayQuery.waitForFinished(1000);
-    m_restart.stop(); m_tick.stop(); m_watchdog.stop();
-    stopScreenPreview();
-    m_session->stop(); stopProcess(); m_session->shutdown();
-    m_screenMonitor.stop();
+    m_restart.stop(); m_tick.stop();
+    stopScreenPreviews();
+    m_session->stop(); stopPreviews(); m_session->shutdown();
+    for (const auto feed : m_screenFeeds) feed->monitor().stop();
 }
+
+// Keep one feed per source in the list, and drop those of removed sources.
+void Backend::syncFeeds() {
+    const auto sources = Sources::list(m_settings);
+    for (const auto &value : sources) {
+        const auto source = value.toObject(); const QString id = source["id"].toString();
+        if (source["kind"] == "camera" && !m_cameraFeeds.contains(id)) {
+            const auto feed = new CameraFeed(this, m_cameraProgram);
+            m_cameraFeeds[id] = feed;
+            connect(feed, &CameraFeed::frameReady, this, [this, id, feed] {
+                emit sourceFrame(id, feed->frameNumber());
+                if (id == firstSource("camera")) emit frameReady();
+            });
+            connect(feed, &CameraFeed::changed, this, &Backend::statusChanged);
+            connect(feed, &CameraFeed::timestamp, this, [this, id](qint64 stamp) { m_session->cameraTimestamp(id, stamp); });
+            connect(feed, &CameraFeed::stalled, this, [this, id, feed](bool starting) {
+                const QString name = label(id);
+                if (m_session->busy()) { m_session->stop(starting ? tr("%1 did not deliver its first frame.").arg(name) : tr("%1 stopped delivering frames.").arg(name)); return; }
+                feed->stop();
+                fail(starting ? tr("%1 did not deliver a frame. Check that it is connected and not in use by another app.").arg(name)
+                    : tr("%1 stopped delivering frames. Check the device before recording again.").arg(name));
+            });
+            connect(feed, &CameraFeed::finished, this, [this, id](int code, bool failed, const QString &log, bool recording) {
+                if (recording) m_session->cameraFinished(id, code, log.right(1000));
+                else if (failed && !m_shuttingDown) fail(tr("%1 preview failed. %2").arg(label(id), log.right(1400)));
+                emit statusChanged();
+            });
+        } else if (source["kind"] == "screen" && !m_screenFeeds.contains(id)) {
+            const auto feed = new ScreenFeed(m_portalCache.filePath("restore-token-" + id), this, m_screenProgram);
+            m_screenFeeds[id] = feed;
+            feed->monitor().setEnabled(viewed());
+            connect(&feed->monitor(), &ScreenMonitor::frameReady, this, [this, id, feed] {
+                emit sourceFrame(id, feed->monitor().frameNumber());
+                if (id == firstSource("screen")) emit screenFrameReady();
+            });
+            connect(feed, &ScreenFeed::changed, this, &Backend::statusChanged);
+        }
+    }
+    for (auto it = m_cameraFeeds.begin(); it != m_cameraFeeds.end();) {
+        if (Sources::find(sources, it.key())["kind"] == "camera") { ++it; continue; }
+        it.value()->stop(); delete it.value(); it = m_cameraFeeds.erase(it);
+    }
+    for (auto it = m_screenFeeds.begin(); it != m_screenFeeds.end();) {
+        if (Sources::find(sources, it.key())["kind"] == "screen") { ++it; continue; }
+        it.value()->forget(); delete it.value(); it = m_screenFeeds.erase(it);
+    }
+}
+
+QString Backend::firstSource(const QString &kind) const { return Sources::first(Sources::list(m_settings), kind)["id"].toString(); }
+QString Backend::label(const QString &id) const { return Sources::label(Sources::find(Sources::list(m_settings), id)); }
+
+int Backend::frame(const QString &id) const {
+    if (const auto feed = m_cameraFeeds.value(id)) return feed->frameNumber();
+    if (const auto feed = m_screenFeeds.value(id)) return feed->monitor().frameNumber();
+    return 0;
+}
+
+QImage Backend::sourceImage(const QString &id) const {
+    if (const auto feed = m_cameraFeeds.value(id)) return feed->image();
+    if (const auto feed = m_screenFeeds.value(id)) return feed->monitor().image();
+    return {};
+}
+
+QByteArray Backend::sourceJpeg(const QString &id) const {
+    if (const auto feed = m_cameraFeeds.value(id)) return feed->jpeg();
+    if (const auto feed = m_screenFeeds.value(id)) return feed->monitor().jpeg();
+    return {};
+}
+
+int Backend::frameNumber() const { return frame(firstSource("camera")); }
+int Backend::screenFrameNumber() const { return frame(firstSource("screen")); }
 
 void Backend::refreshDevices() {
     if (m_session && m_session->busy()) return;
-    if (m_visible || m_previewClients > 0) stopProcess();
+    if (viewed()) stopPreviews();
     m_cameras.clear(); m_microphones.clear(); m_desktopSources.clear(); m_screens.clear();
     m_screens.append(QVariantMap{{"id", "portal"}, {"label", tr("Screen/window picker")}});
     for (const auto &entry : QJsonDocument::fromJson(query("hyprctl", {"-j", "monitors"})).array()) {
@@ -253,15 +272,16 @@ void Backend::refreshDevices() {
         if (s["name"].toString().endsWith(".monitor")) { m_desktopSources.append(QVariantMap{{"id", s["name"].toString()}, {"label", s["description"].toString()}}); continue; }
         m_microphones.append(QVariantMap{{"id", s["name"].toString()}, {"label", s["description"].toString()}});
     }
-    if (!m_settings.contains("camera") && !m_cameras.isEmpty()) m_settings["camera"] = m_cameras.first().toMap()["id"].toString();
-    if (!m_settings.contains("mode") && !modes().isEmpty()) {
-        auto choices = modes(); auto selected = choices.first().toMap();
-        for (const auto &choice : choices) {
-            auto c = choice.toMap();
-            if (c["size"] == "1920x1080" && c["format"] == "mjpeg") { selected = c; break; }
-        }
-        m_settings["mode"] = selected["id"].toString();
+    // A camera source without a device takes the first one no other source uses.
+    auto video = Sources::list(m_settings);
+    for (int i = 0; i < video.size(); ++i) {
+        auto source = video[i].toObject();
+        if (source["kind"] != "camera") continue;
+        if (source["device"].toString().isEmpty()) source["device"] = unusedCamera(video);
+        if (source["mode"].toString().isEmpty()) source["mode"] = defaultMode(source["device"].toString(), true);
+        video[i] = source;
     }
+    m_settings["videoSources"] = video;
     if (!m_settings.contains("audio")) {
         m_settings["audio"] = "default";
         for (const auto &mic : m_microphones) if (mic.toMap()["label"].toString().contains("Shure", Qt::CaseInsensitive)) m_settings["audio"] = mic.toMap()["id"].toString();
@@ -271,67 +291,120 @@ void Backend::refreshDevices() {
         m_settings["desktopAudio"] = preferred;
     }
     emit devicesChanged(); emit settingsChanged();
-    if (m_visible || m_previewClients > 0) { dismissError(); m_restart.start(); }
+    if (viewed()) { dismissError(); m_restart.start(); }
 }
 
-QVariantList Backend::modes() const {
-    for (const auto &camera : m_cameras) if (camera.toMap()["id"].toString() == m_settings["camera"].toString()) return camera.toMap()["modes"].toList();
+QVariantList Backend::modesOf(const QString &device) const {
+    for (const auto &camera : m_cameras) if (camera.toMap()["id"].toString() == device) return camera.toMap()["modes"].toList();
+    return {};
+}
+
+QVariantList Backend::modes() const { return modesOf(Sources::first(Sources::list(m_settings), "camera")["device"].toString()); }
+
+QString Backend::defaultMode(const QString &device, bool preferFullHd) const {
+    const auto choices = modesOf(device);
+    if (choices.isEmpty()) return {};
+    if (preferFullHd) for (const auto &choice : choices) {
+        const auto mode = choice.toMap();
+        if (mode["size"] == "1920x1080" && mode["format"] == "mjpeg") return mode["id"].toString();
+    }
+    return choices.first().toMap()["id"].toString();
+}
+
+QString Backend::unusedCamera(const QJsonArray &sources) const {
+    QStringList taken;
+    for (const auto &value : sources) if (value.toObject()["kind"] == "camera") taken << value.toObject()["device"].toString();
+    for (const auto &camera : m_cameras) if (!taken.contains(camera.toMap()["id"].toString())) return camera.toMap()["id"].toString();
     return {};
 }
 
 bool Backend::validSettings(const QJsonObject &s, QString *error) {
     auto reject = [&](const QString &message) { if (error) *error = message; return false; };
-    if (!s.value("cameraEnabled").toBool(true)) return QDir::isAbsolutePath(s["directory"].toString()) && SessionRecorder::validateSources(s, error);
-    if (!s["camera"].toString().startsWith("/dev/")) return reject(tr("Select a camera."));
-    static const QRegularExpression mode("^[0-9]{2,5}x[0-9]{2,5}@[0-9]{1,8}/[0-9]{1,8}:(mjpeg|yuyv422|h264)$");
-    if (!mode.match(s["mode"].toString()).hasMatch()) return reject(tr("Select a supported resolution and frame rate."));
-    auto rate = s["mode"].toString().section('@', 1).section(':', 0, 0);
-    if (rate.section('/', 0, 0).toInt() == 0 || rate.section('/', 1, 1).toInt() == 0) return reject(tr("Invalid frame rate."));
+    const auto cameras = Sources::enabled(s, "camera");
+    if (cameras.isEmpty()) return QDir::isAbsolutePath(s["directory"].toString()) && SessionRecorder::validateSources(s, error);
+    QStringList devices;
+    for (const auto &value : cameras) {
+        const auto camera = value.toObject();
+        if (!CameraFeed::valid(camera, error)) return false;
+        // A V4L2 device opens once, so two sources cannot share it.
+        const QString resolved = QFileInfo(camera["device"].toString()).canonicalFilePath();
+        const QString device = resolved.isEmpty() ? camera["device"].toString() : resolved;
+        if (devices.contains(device)) return reject(tr("%1 uses a camera that another source already records. Choose a different camera for it.").arg(Sources::label(camera)));
+        devices << device;
+    }
     if (s["audio"].toString().isEmpty()) return reject(tr("Select an audio source or No audio."));
     if (!QDir::isAbsolutePath(s["directory"].toString())) return reject(tr("The output folder must be an absolute path."));
-    if (s["encoding"] != "original" && s["encoding"] != "h264") return reject(tr("Unknown recording format."));
     return true;
 }
 
-QStringList Backend::ffmpegArguments(const QJsonObject &s, const QString &output, bool recording) {
-    const QString mode = s["mode"].toString();
-    const QString size = mode.section('@', 0, 0), rate = mode.section('@', 1).section(':', 0, 0), format = mode.section(':', 1);
-    QStringList args{"-hide_banner", "-nostats", "-loglevel", "info", "-stats_period", "0.5", "-progress", "pipe:2", "-n",
-        "-thread_queue_size", "512", "-f", "v4l2", "-input_format", format, "-video_size", size, "-framerate", rate, "-i", s["camera"].toString()};
-    if (recording) {
-        args.insert(1, "-debug_ts");
-        args.insert(args.indexOf("-f"), "-timestamps");
-        args.insert(args.indexOf("-timestamps") + 1, "abs");
-        args << "-map" << "0:v:0";
-        if (s["encoding"] == "original" && (format == "mjpeg" || format == "h264")) args << "-c:v" << "copy";
-        else args << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << "18" << "-pix_fmt" << "yuv420p";
-        args << "-an" << "-f" << "matroska" << output;
-    }
-    // One input feeds both the untouched recording and a small monitoring image.
-    args << "-map" << "0:v:0" << "-an" << "-vf" << "fps=30,scale=640:-2" << "-c:v" << "mjpeg" << "-q:v" << "5" << "-threads" << "2" << "-f" << "image2pipe" << "pipe:1";
-    return args;
+QVariantMap Backend::settings() const {
+    QVariantMap result = m_settings.toVariantMap();
+    const auto sources = Sources::list(m_settings);
+    const auto screen = Sources::first(sources, "screen"), camera = Sources::first(sources, "camera");
+    result["screenEnabled"] = !Sources::enabled(m_settings, "screen").isEmpty();
+    result["cameraEnabled"] = !Sources::enabled(m_settings, "camera").isEmpty();
+    result["screenTarget"] = screen["target"].toString("portal"); result["screenFps"] = screen["fps"].toInt(60);
+    result["screenQuality"] = screen["quality"].toString("very_high");
+    result["camera"] = camera["device"].toString(); result["mode"] = camera["mode"].toString();
+    result["encoding"] = camera["encoding"].toString("original");
+    return result;
 }
 
 QVariantMap Backend::status() const {
     QVariantMap result = m_session ? m_session->status() : QVariantMap();
     const bool busy = m_session && m_session->busy();
     const bool hasSession = !result.value("output").toString().isEmpty();
-    if (!busy && !hasSession) { result["state"] = m_state; result["error"] = m_error; }
+    const QString sessionState = result.value("state").toString();
+    const bool capturing = busy && (sessionState == "recording" || sessionState == "starting");
+    QHash<QString, QVariantMap> recorded;
+    for (const auto &value : result.value("screens").toList()) recorded[value.toMap()["source"].toString()] = value.toMap();
+    QSet<QString> writing;
+    for (const auto &value : result.value("sources").toList()) if (value.toMap()["state"] == "recording") writing.insert(value.toMap()["source"].toString());
+    // What each source is doing right now, in list order, for the window and the bar.
+    QVariantList video; QVariantMap firstScreen, firstCamera;
+    bool selecting = false, live = false, opening = false, previewing = false;
+    for (const auto &value : Sources::list(m_settings)) {
+        const auto source = value.toObject(); const QString id = source["id"].toString();
+        QVariantMap entry{{"id", id}, {"kind", source["kind"].toString()}, {"name", Sources::label(source)}, {"enabled", source["enabled"].toBool()}};
+        if (source["kind"] == "screen") {
+            const auto feed = m_screenFeeds.value(id);
+            const bool portal = source["target"] == "portal";
+            const QString reported = recorded.value(id).value("health").toString();
+            const QString health = busy && !reported.isEmpty() ? reported : QString("inactive");
+            // Either the preview's picker is open, or the take is waiting on this screen's.
+            const bool choosing = (feed && feed->selecting())
+                || (busy && sessionState == "waiting-screen" && portal && recorded.value(id).value("launched").toBool() && !writing.contains(id));
+            entry["previewState"] = feed ? feed->state() : QString("inactive"); entry["previewError"] = feed ? feed->error() : QString();
+            entry["selected"] = !portal || (feed && feed->selected()); entry["selecting"] = choosing; entry["health"] = health;
+            entry["recording"] = capturing && writing.contains(id) && !QStringList{"recovering", "failed", "starting"}.contains(health);
+            if (choosing) selecting = true;
+            if (firstScreen.isEmpty()) firstScreen = entry;
+        } else {
+            const auto feed = m_cameraFeeds.value(id);
+            entry["previewState"] = feed ? feed->state() : QString("inactive"); entry["previewError"] = QString();
+            entry["recording"] = capturing && writing.contains(id);
+            if (feed && feed->running()) previewing = true;
+            if (entry["previewState"] == "waiting") opening = true;
+            if (firstCamera.isEmpty()) firstCamera = entry;
+        }
+        if (entry["previewState"] == "live") live = true;
+        video.append(entry);
+    }
+    if (!busy && !hasSession) { result["state"] = live ? "preview" : opening ? "preview-starting" : "idle"; result["error"] = m_error; }
     if (!busy && !m_error.isEmpty()) { result["state"] = "error"; result["error"] = m_error; }
-    result["displayWarning"] = busy && m_settings["screenEnabled"].toBool() && m_displaySettingsOpen
+    result["displayWarning"] = busy && !Sources::enabled(m_settings, "screen").isEmpty() && m_displaySettingsOpen
         ? tr("OmaControl is open during screen recording. Changing display settings can interrupt capture. Wait until recording has finished before changing displays.") : QString();
     result["running"] = true; result["recording"] = busy;
-    result["preview"] = m_process.state() != QProcess::NotRunning;
+    result["preview"] = previewing;
     result["peakDb"] = m_peak; result["desktopPeakDb"] = m_desktopPeak;
-    result["screenPreviewState"] = m_screenMonitor.state();
-    result["screenPreviewError"] = m_screenMonitor.error();
-    result["screenSelected"] = m_screenSelected;
-    result["screenSelecting"] = m_screenPreviewProcess.state() != QProcess::NotRunning && !m_screenPreviewHasData;
-    if (!busy && !m_screenSelectionError.isEmpty()) { result["screenPreviewState"] = "error"; result["screenPreviewError"] = m_screenSelectionError; }
-    result["cameraPreviewState"] = m_process.state() == QProcess::NotRunning ? "inactive" :
-        m_lastFrame.isValid() && m_lastFrame.elapsed() > 3000 ? "stalled" : m_frameNumber > 0 ? "live" : "waiting";
-    result["camera"] = m_settings["camera"]; result["audio"] = m_settings["audio"];
-    result["cameraEnabled"] = m_settings["cameraEnabled"]; result["screenEnabled"] = m_settings["screenEnabled"];
+    result["videoSources"] = video;
+    result["screenSelecting"] = selecting;
+    // The first screen and camera under their earlier names, for scripts and older widgets.
+    result["screenPreviewState"] = firstScreen.value("previewState", "inactive"); result["screenPreviewError"] = firstScreen.value("previewError", QString());
+    result["screenSelected"] = firstScreen.value("selected", false);
+    result["cameraPreviewState"] = firstCamera.value("previewState", "inactive");
+    result["camera"] = Sources::first(Sources::list(m_settings), "camera")["device"].toString(); result["audio"] = m_settings["audio"];
+    result["cameraEnabled"] = !Sources::enabled(m_settings, "camera").isEmpty(); result["screenEnabled"] = !Sources::enabled(m_settings, "screen").isEmpty();
     result["microphoneEnabled"] = m_settings["microphoneEnabled"]; result["desktopEnabled"] = m_settings["desktopEnabled"];
     return result;
 }
@@ -351,103 +424,169 @@ bool Backend::setSetting(const QString &key, const QVariant &value) {
         if (m_shuttingDown || !QStringList{"side", "stacked"}.contains(value.toString())) return false;
         m_settings[key] = value.toString(); emit settingsChanged(); return saveSettings();
     }
-    if (m_shuttingDown || m_session->busy() || m_state == "stopping") return false;
-    if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "screenQuality", "desktopAudio"}.contains(key)) return false;
-    if (key == "screenQuality" && !QStringList{"high", "very_high", "ultra"}.contains(value.toString())) return false;
-    stopProcess();
+    if (m_shuttingDown || m_session->busy()) return false;
+    // The single-source keys act on the first screen or camera, adding one if there is none.
+    static const QHash<QString, QString> perSource{{"camera", "device"}, {"mode", "mode"}, {"encoding", "encoding"},
+        {"screenTarget", "target"}, {"screenFps", "fps"}, {"screenQuality", "quality"}};
+    const QString kind = key.startsWith("screen") ? "screen" : "camera";
+    if (key == "screenEnabled" || key == "cameraEnabled") return setKindEnabled(kind, value.toBool());
+    if (perSource.contains(key)) {
+        const QString id = firstSource(kind).isEmpty() ? addSource(kind) : firstSource(kind);
+        return !id.isEmpty() && setSourceSetting(id, perSource[key], value);
+    }
+    if (!QStringList{"audio", "directory", "microphoneEnabled", "desktopEnabled", "desktopAudio"}.contains(key)) return false;
     m_session->previewAudio(m_settings, false);
     if (key.endsWith("Enabled")) m_settings[key] = value.toBool();
-    else if (key == "screenFps") m_settings[key] = qBound(15, value.toInt(), 120);
     else m_settings[key] = value.toString().left(4096);
-    if ((key == "screenEnabled" && !value.toBool()) || key == "screenTarget") {
-        stopScreenPreview(); m_screenSelected = false; m_screenSelectionError.clear();
-        QFile::remove(m_portalCache.filePath("restore-token"));
-    }
-    if (key == "camera") m_settings["mode"] = modes().isEmpty() ? "" : modes().first().toMap()["id"].toString();
     emit settingsChanged();
     const bool saved = saveSettings();
-    if (saved && (m_visible || m_previewClients > 0)) m_restart.start();
+    if (saved && viewed()) m_restart.start();
     return saved;
 }
 
-void Backend::fail(const QString &message) { m_error = message; m_state = "error"; emit statusChanged(); }
-void Backend::dismissError() { m_error.clear(); if (!m_recording) m_state = "idle"; emit statusChanged(); }
+// Turning a kind off silences every source of it; turning it on enables the first.
+bool Backend::setKindEnabled(const QString &kind, bool enabled) {
+    bool ok = true;
+    if (!enabled) {
+        for (const auto &value : Sources::enabled(m_settings, kind)) if (!setSourceSetting(value.toObject()["id"].toString(), "enabled", false)) ok = false;
+        return ok;
+    }
+    const QString id = firstSource(kind).isEmpty() ? addSource(kind) : firstSource(kind);
+    return !id.isEmpty() && setSourceSetting(id, "enabled", true);
+}
 
-void Backend::launch(bool recording) {
-    Q_UNUSED(recording)
+bool Backend::setSourceSetting(const QString &id, const QString &key, const QVariant &value) {
+    if (m_shuttingDown || m_session->busy()) return false;
+    auto sources = Sources::list(m_settings);
+    int index = -1;
+    for (int i = 0; i < sources.size(); ++i) if (sources[i].toObject()["id"] == id) index = i;
+    if (index < 0) return false;
+    auto source = sources[index].toObject();
+    const bool screen = source["kind"] == "screen", camera = !screen;
+    const QString text = value.toString().left(4096);
+    if (key == "name") source["name"] = Sources::uniqueName(sources, Sources::cleanName(text), id);
+    else if (key == "enabled") source["enabled"] = value.toBool();
+    else if (screen && key == "target" && !text.isEmpty()) source["target"] = text;
+    else if (screen && key == "fps") source["fps"] = qBound(15, value.toInt(), 120);
+    else if (screen && key == "quality" && QStringList{"high", "very_high", "ultra"}.contains(text)) source["quality"] = text;
+    else if (camera && key == "device") { source["device"] = text; source["mode"] = defaultMode(text, false); }
+    else if (camera && key == "mode") source["mode"] = text;
+    else if (camera && key == "encoding" && (text == "original" || text == "h264")) source["encoding"] = text;
+    else return false;
+    if (source == sources[index].toObject()) return true;
+    sources[index] = source; m_settings["videoSources"] = sources;
+    // Only this source's own preview restarts; the others keep running.
+    if (camera && key != "name" && key != "encoding") { if (const auto feed = m_cameraFeeds.value(id)) feed->stop(); }
+    if (screen && ((key == "enabled" && !value.toBool()) || key == "target")) { if (const auto feed = m_screenFeeds.value(id)) feed->forget(); }
+    emit settingsChanged();
+    const bool saved = saveSettings();
+    if (saved && viewed()) m_restart.start();
+    return saved;
+}
+
+QString Backend::addSource(const QString &kind) {
+    if (m_shuttingDown || m_session->busy() || (kind != "screen" && kind != "camera")) return {};
+    auto sources = Sources::list(m_settings);
+    if (sources.size() >= Sources::maximum) return {};
+    const QString id = Sources::newId(sources, kind);
+    QJsonObject source{{"id", id}, {"kind", kind}, {"name", ""}, {"enabled", true}};
+    if (kind == "screen") { source["target"] = "portal"; source["fps"] = 60; source["quality"] = "very_high"; }
+    else {
+        // Without a free camera it starts switched off, so it cannot block a take.
+        const QString device = unusedCamera(sources);
+        source["device"] = device; source["mode"] = defaultMode(device, true); source["encoding"] = "original"; source["enabled"] = !device.isEmpty();
+    }
+    sources.append(source); m_settings["videoSources"] = sources;
+    syncFeeds(); emit settingsChanged();
+    if (!saveSettings()) return {};
+    if (viewed()) m_restart.start();
+    return id;
+}
+
+bool Backend::removeSource(const QString &id) {
+    if (m_shuttingDown || m_session->busy()) return false;
+    QJsonArray kept;
+    const auto sources = Sources::list(m_settings);
+    for (const auto &value : sources) if (value.toObject()["id"] != id) kept.append(value);
+    if (kept.size() == sources.size()) return false;
+    m_settings["videoSources"] = kept;
+    syncFeeds(); emit settingsChanged(); emit statusChanged();
+    return saveSettings();
+}
+
+void Backend::fail(const QString &message) { m_error = message; emit statusChanged(); }
+void Backend::dismissError() { m_error.clear(); emit statusChanged(); }
+
+void Backend::launch() {
     m_restart.stop();
-    if (m_session->busy()) return;
+    if (m_shuttingDown || m_session->busy()) return;
     m_session->previewAudio(m_settings, true);
-    if (!m_settings["cameraEnabled"].toBool(true)) { m_state = "idle"; emit statusChanged(); return; }
+    startScreenPreviews();
+    const auto cameras = Sources::enabled(m_settings, "camera");
     QString error;
-    if (!validSettings(m_settings, &error)) { fail(error); return; }
-    if (m_process.state() != QProcess::NotRunning) return;
-    m_frames.clear(); m_messages.clear(); m_log.clear(); m_error.clear(); m_frameNumber = 0; m_image = QImage(); m_previewJpeg.clear(); emit frameReady();
-    m_recording = false; m_state = "preview-starting";
-    m_process.start("ffmpeg", ffmpegArguments(m_settings, {}, false));
-    m_watchdog.start(); emit statusChanged();
+    if (!cameras.isEmpty() && !validSettings(m_settings, &error)) { fail(error); return; }
+    bool started = false;
+    for (const auto &value : cameras) {
+        const auto camera = value.toObject();
+        const auto feed = m_cameraFeeds.value(camera["id"].toString());
+        if (!feed || feed->running()) continue;
+        feed->preview(camera); started = true;
+    }
+    if (started) m_error.clear();
+    emit statusChanged();
 }
 
 bool Backend::start() {
     if (m_shuttingDown || m_session->busy()) return false;
-    if (m_screenPreviewProcess.state() != QProcess::NotRunning && !m_screenPreviewHasData) { fail(tr("Finish choosing the screen before starting a take.")); return false; }
+    for (const auto feed : m_screenFeeds) if (feed->selecting()) { fail(tr("Finish choosing the screen before starting a take.")); return false; }
     QString error;
     if (!SessionRecorder::validateSources(m_settings, &error) || !validSettings(m_settings, &error)) { fail(error); return false; }
-    if (m_settings["cameraEnabled"].toBool(true)) {
+    for (const auto &value : Sources::enabled(m_settings, "camera")) {
+        const auto camera = value.toObject();
         bool supported = false;
-        for (const auto &mode : modes()) if (mode.toMap()["id"].toString() == m_settings["mode"].toString()) supported = true;
-        if (!supported) { fail(tr("The selected camera mode is unavailable.")); return false; }
+        for (const auto &mode : modesOf(camera["device"].toString())) if (mode.toMap()["id"].toString() == camera["mode"].toString()) supported = true;
+        if (!supported) { fail(tr("%1: the selected camera mode is unavailable.").arg(Sources::label(camera))); return false; }
     }
     if (!saveSettings()) return false;
-    stopScreenPreview(); stopProcess(); m_error.clear(); m_screenSelectionError.clear();
-    return m_session->start(m_settings, {{"screen", m_portalCache.filePath("restore-token")}});
+    stopScreenPreviews(); stopPreviews(); m_error.clear();
+    QHash<QString, QString> tokens;
+    for (auto it = m_screenFeeds.begin(); it != m_screenFeeds.end(); ++it) { it.value()->setError({}); tokens[it.key()] = it.value()->tokenPath(); }
+    return m_session->start(m_settings, tokens);
 }
 
-void Backend::stopScreenPreview() {
-    m_screenSelectTimer.stop();
-    if (m_screenPreviewProcess.state() == QProcess::NotRunning) return;
-    m_screenPreviewStopping = true;
-    ::kill(m_screenPreviewProcess.processId(), SIGINT);
-    if (!m_screenPreviewProcess.waitForFinished(3000)) { m_screenPreviewProcess.kill(); m_screenPreviewProcess.waitForFinished(1000); }
-    m_screenMonitor.stop(); m_screenPreviewStopping = false;
-}
+void Backend::stopScreenPreviews() { for (const auto feed : m_screenFeeds) feed->stop(); }
 
-void Backend::startScreenPreview(bool choose) {
-    if (m_shuttingDown || m_session->busy() || !m_portalCache.isValid()) return;
-    if (m_settings["screenTarget"] != "portal") return;
-    if (!choose && (m_screenPreviewProcess.state() != QProcess::NotRunning || !QFileInfo::exists(m_portalCache.filePath("restore-token")))) return;
-    stopScreenPreview();
-    if (choose) { QFile::remove(m_portalCache.filePath("restore-token")); m_screenSelected = false; }
-    m_screenPreviewHasData = false;
-    m_screenSelectionError.clear(); m_screenPreviewLog.clear();
-    m_screenMonitor.setEnabled(true); m_screenMonitor.start();
-    m_screenPreviewProcess.start("gpu-screen-recorder", {"-w", "portal", "-f", "15", "-k", "h264", "-q", "medium", "-fallback-cpu-encoding", "yes", "-keyint", "1",
-        "-restore-portal-session", "yes", "-portal-session-token-filepath", m_portalCache.filePath("restore-token"), "-c", "mpegts", "-o", "/dev/stdout"});
-    m_screenSelectTimer.start();
-    emit statusChanged();
-}
-
-bool Backend::chooseScreen() {
-    if (m_shuttingDown || m_session->busy()) return false;
-    if (!m_portalCache.isValid()) { m_screenSelectionError = tr("Could not create a private screen-sharing session folder."); emit statusChanged(); return false; }
-    if (!m_settings["screenEnabled"].toBool()) setSetting("screenEnabled", true);
-    if (m_settings["screenTarget"] != "portal") setSetting("screenTarget", "portal");
-    startScreenPreview(true); return true;
-}
-
-void Backend::stopProcess() {
-    m_watchdog.stop(); m_restart.stop();
-    if (!m_session->busy()) m_session->previewAudio(m_settings, false);
-    if (m_process.state() == QProcess::NotRunning) return;
-    // FFmpeg's own quit command lets it write the Matroska index and trailers.
-    m_stopping = true;
-    m_state = "stopping"; emit statusChanged();
-    m_process.write("q\n"); m_process.waitForBytesWritten(500);
-    if (!m_process.waitForFinished(5000)) {
-        m_process.terminate();
-        if (!m_process.waitForFinished(2000)) { m_process.kill(); m_process.waitForFinished(1000); }
+// An approved selection, or a monitor captured directly, shows again by itself.
+// Only chooseScreen() opens the picker.
+void Backend::startScreenPreviews() {
+    if (m_shuttingDown || m_session->busy() || !viewed() || !m_portalCache.isValid()) return;
+    for (const auto &value : Sources::enabled(m_settings, "screen")) {
+        const auto screen = value.toObject(); const QString target = screen["target"].toString();
+        const auto feed = m_screenFeeds.value(screen["id"].toString());
+        if (feed && !target.isEmpty() && (target != "portal" || feed->selected())) feed->start(target, false);
     }
-    m_stopping = false;
+}
+
+bool Backend::chooseScreen(const QString &requested) {
+    if (m_shuttingDown || m_session->busy()) return false;
+    const QString id = !requested.isEmpty() ? requested : firstSource("screen").isEmpty() ? addSource("screen") : firstSource("screen");
+    const auto feed = m_screenFeeds.value(id);
+    if (!feed) return false;
+    if (!m_portalCache.isValid()) { feed->setError(tr("Could not create a private screen-sharing session folder.")); emit statusChanged(); return false; }
+    // One picker at a time, so it is always clear which source is being chosen.
+    for (auto it = m_screenFeeds.begin(); it != m_screenFeeds.end(); ++it) if (it.key() != id && it.value()->selecting()) return false;
+    const auto source = Sources::find(Sources::list(m_settings), id);
+    if (!source["enabled"].toBool()) setSourceSetting(id, "enabled", true);
+    if (source["target"] != "portal") setSourceSetting(id, "target", "portal");
+    feed->start("portal", true); return true;
+}
+
+// Stop the camera and audio previews, asking every camera first so they finish together.
+void Backend::stopPreviews() {
+    m_restart.stop();
+    if (!m_session->busy()) m_session->previewAudio(m_settings, false);
+    for (const auto feed : m_cameraFeeds) feed->requestStop();
+    for (const auto feed : m_cameraFeeds) feed->stop();
 }
 
 void Backend::stop() { if (m_session->busy()) m_session->stop(); }
@@ -456,57 +595,24 @@ void Backend::toggle() { if (m_session->busy()) stop(); else start(); }
 void Backend::setWindowVisible(bool visible) {
     if (m_shuttingDown) return;
     m_visible = visible;
-    m_screenMonitor.setEnabled(m_visible || m_previewClients > 0);
-    if (!m_session->busy()) {
-        if (!m_visible && !m_previewClients) stopScreenPreview();
-        else if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false);
-    }
+    for (const auto feed : m_screenFeeds) feed->monitor().setEnabled(viewed());
     if (m_session->busy()) return;
-    if (!visible && m_previewClients == 0) stopProcess();
-    else if (visible || m_previewClients > 0) m_restart.start();
+    if (!viewed()) { stopScreenPreviews(); stopPreviews(); }
+    else m_restart.start();
 }
-void Backend::addPreviewClient() { ++m_previewClients; m_screenMonitor.setEnabled(true); if (!m_session->busy()) { m_restart.start(); if (m_settings["screenEnabled"].toBool() && m_screenSelected) startScreenPreview(false); } }
+void Backend::addPreviewClient() {
+    ++m_previewClients;
+    for (const auto feed : m_screenFeeds) feed->monitor().setEnabled(true);
+    if (!m_session->busy()) m_restart.start();
+}
 void Backend::removePreviewClient() {
     m_previewClients = qMax(0, m_previewClients - 1);
-    m_screenMonitor.setEnabled(m_visible || m_previewClients > 0);
-    if (!m_previewClients && !m_visible && !m_session->busy()) stopScreenPreview();
-    if (!m_previewClients && !m_visible && !m_session->busy()) stopProcess();
+    for (const auto feed : m_screenFeeds) feed->monitor().setEnabled(viewed());
+    if (!viewed() && !m_session->busy()) { stopScreenPreviews(); stopPreviews(); }
 }
-bool Backend::recoverSession() { if (m_session->busy()) return false; stopProcess(); return m_session->recover(m_settings["directory"].toString()); }
+bool Backend::recoverSession() { if (m_session->busy()) return false; stopPreviews(); return m_session->recover(m_settings["directory"].toString()); }
 
 void Backend::openFolder() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings["directory"].toString())); }
-
-void Backend::consumeVideo() {
-    m_frames += m_process.readAllStandardOutput();
-    if (m_frames.size() > 8 * 1024 * 1024) m_frames.clear();
-    for (;;) {
-        const auto begin = m_frames.indexOf(QByteArray::fromHex("ffd8"));
-        if (begin < 0) { if (m_frames.size() > 1) m_frames = m_frames.right(1); break; }
-        if (begin > 0) m_frames.remove(0, begin);
-        const auto end = m_frames.indexOf(QByteArray::fromHex("ffd9"), 2);
-        if (end < 0) break;
-        const auto jpeg = m_frames.left(end + 2);
-        QImage image = QImage::fromData(jpeg, "JPEG");
-        m_frames.remove(0, end + 2);
-        if (image.isNull()) continue;
-        m_image = image; m_previewJpeg = jpeg; m_lastFrame.start(); ++m_frameNumber; emit frameReady();
-        if (m_state == "starting" || m_state == "preview-starting") {
-            m_watchdog.stop(); m_state = m_recording ? "recording" : "preview"; emit statusChanged();
-        }
-    }
-}
-
-void Backend::consumeMessages() {
-    QByteArray bytes = m_process.readAllStandardError();
-    m_log = (m_log + bytes).right(4096);
-    m_messages += bytes;
-    for (;;) {
-        auto end = m_messages.indexOf('\n'); if (end < 0) break;
-        auto line = m_messages.left(end).trimmed(); m_messages.remove(0, end + 1);
-        if (m_recording) { const auto stamp = SessionRecorder::packetTimestamp(line); if (stamp) m_session->cameraTimestamp(m_cameraSource, stamp); }
-    }
-    if (m_messages.size() > 65536) m_messages.clear();
-}
 
 std::optional<double> Backend::parsePeak(const QByteArray &line) {
     const QByteArray key("lavfi.astats.Overall.Peak_level=");
@@ -519,30 +625,30 @@ std::optional<double> Backend::parsePeak(const QByteArray &line) {
     return qBound(-90.0, peak, 0.0);
 }
 
-void Backend::finish(int code, QProcess::ExitStatus exitStatus) {
-    m_watchdog.stop(); consumeMessages();
-    const bool wasRecording = m_recording; m_recording = false; m_state = "idle";
-    if (wasRecording || m_session->busy()) { m_session->cameraFinished(m_cameraSource, code, QString::fromUtf8(m_log.right(1000))); emit statusChanged(); return; }
-    if (!m_shuttingDown && !m_stopping && (code != 0 || exitStatus != QProcess::NormalExit)) fail(tr("Camera preview failed. %1").arg(QString::fromUtf8(m_log.right(1400))));
-    emit statusChanged();
-}
-
 QJsonObject Backend::handle(const QJsonObject &request) {
     const auto command = request["command"].toString();
-    bool ok = true;
+    const auto options = request["settings"].toObject();
+    bool ok = true; QString added;
     if (command == "start") ok = start();
     else if (command == "stop") stop();
     else if (command == "toggle") toggle();
     else if (command == "recover") ok = recoverSession();
-    else if (command == "choose-screen") ok = chooseScreen();
+    else if (command == "choose-screen") ok = chooseScreen(request["id"].toString());
     else if (command == "open") emit openRequested();
     else if (command == "configure") {
-        const auto options = request["settings"].toObject();
         for (auto it = options.begin(); it != options.end(); ++it) if (!setSetting(it.key(), it.value().toVariant())) ok = false;
-    } else if (command != "status" && command != "settings" && command != "devices" && command != "ensure") ok = false;
+    } else if (command == "source-add") {
+        added = addSource(request["kind"].toString()); ok = !added.isEmpty();
+        if (ok) for (auto it = options.begin(); it != options.end(); ++it) if (!setSourceSetting(added, it.key(), it.value().toVariant())) ok = false;
+    } else if (command == "source-set") {
+        ok = !options.isEmpty();
+        for (auto it = options.begin(); it != options.end(); ++it) if (!setSourceSetting(request["id"].toString(), it.key(), it.value().toVariant())) ok = false;
+    } else if (command == "source-remove") ok = removeSource(request["id"].toString());
+    else if (command != "status" && command != "settings" && command != "devices" && command != "ensure") ok = false;
     QJsonObject result = QJsonObject::fromVariantMap(status());
     result["ok"] = ok;
-    if (command == "settings" || command == "configure") result["settings"] = m_settings;
+    if (!added.isEmpty()) result["id"] = added;
+    if (command == "settings" || command == "configure" || command.startsWith("source-")) result["settings"] = QJsonObject::fromVariantMap(settings());
     if (command == "devices") { result["cameras"] = QJsonArray::fromVariantList(m_cameras); result["microphones"] = QJsonArray::fromVariantList(m_microphones); result["screens"] = QJsonArray::fromVariantList(m_screens); result["desktopSources"] = QJsonArray::fromVariantList(m_desktopSources); }
     return result;
 }
