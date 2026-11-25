@@ -248,19 +248,7 @@ void Backend::refreshDevices() {
         const auto name = monitor["name"].toString();
         if (!name.isEmpty()) m_screens.append(QVariantMap{{"id", name}, {"label", name + " · " + tr("Direct monitor capture")}});
     }
-    QDir directory("/sys/class/video4linux");
-    for (const auto &node : directory.entryList({"video*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-        const QString path = "/dev/" + node;
-        auto available = cameraModes(path);
-        if (available.isEmpty()) continue;
-        QFile name(directory.filePath(node + "/name"));
-        if (!name.open(QIODevice::ReadOnly)) continue;
-        QString stablePath = path;
-        QDir ids("/dev/v4l/by-id");
-        for (const auto &id : ids.entryList(QDir::Files))
-            if (QFileInfo(ids.filePath(id)).canonicalFilePath() == QFileInfo(path).canonicalFilePath()) { stablePath = ids.filePath(id); break; }
-        m_cameras.append(QVariantMap{{"id", stablePath}, {"label", QString::fromUtf8(name.readAll()).trimmed() + " (" + path + ")"}, {"modes", available}});
-    }
+    m_cameras = scanCameras();
     m_microphones.append(QVariantMap{{"id", "none"}, {"label", tr("No audio")}});
     m_microphones.append(QVariantMap{{"id", "default"}, {"label", tr("System default microphone")}});
     const auto sources = QJsonDocument::fromJson(query("pactl", {"-f", "json", "list", "sources"})).array();
@@ -289,6 +277,33 @@ void Backend::refreshDevices() {
     }
     emit devicesChanged(); emit settingsChanged();
     if (viewed()) { dismissError(); m_restart.start(); }
+}
+
+// Every video device that offers a mode the recorder can use. Listing modes
+// only asks the driver what it supports, so a camera can be in use meanwhile.
+QVariantList Backend::scanCameras() {
+    QVariantList cameras;
+    QDir directory("/sys/class/video4linux");
+    for (const auto &node : directory.entryList({"video*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        const QString path = "/dev/" + node;
+        auto available = cameraModes(path);
+        if (available.isEmpty()) continue;
+        QFile name(directory.filePath(node + "/name"));
+        if (!name.open(QIODevice::ReadOnly)) continue;
+        QString stablePath = path;
+        QDir ids("/dev/v4l/by-id");
+        for (const auto &id : ids.entryList(QDir::Files))
+            if (QFileInfo(ids.filePath(id)).canonicalFilePath() == QFileInfo(path).canonicalFilePath()) { stablePath = ids.filePath(id); break; }
+        cameras.append(QVariantMap{{"id", stablePath}, {"label", QString::fromUtf8(name.readAll()).trimmed() + " (" + path + ")"}, {"modes", available}});
+    }
+    return cameras;
+}
+
+void Backend::rescanCameras() {
+    if (m_shuttingDown || m_session->busy()) return;
+    const auto found = scanCameras();
+    if (found == m_cameras) return;
+    m_cameras = found; emit devicesChanged();
 }
 
 QVariantList Backend::modesOf(const QString &device) const {
@@ -471,7 +486,11 @@ bool Backend::setSourceSetting(const QString &id, const QString &key, const QVar
     else if (screen && key == "target" && !text.isEmpty()) source["target"] = text;
     else if (screen && key == "fps") source["fps"] = qBound(15, value.toInt(), 120);
     else if (screen && key == "quality" && QStringList{"high", "very_high", "ultra"}.contains(text)) source["quality"] = text;
-    else if (camera && key == "device") { source["device"] = text; source["mode"] = defaultMode(text, false); }
+    else if (camera && key == "device") {
+        // A camera that had no device was only waiting for one, so its first comes switched on.
+        if (source["device"].toString().isEmpty() && !text.isEmpty()) source["enabled"] = true;
+        source["device"] = text; source["mode"] = defaultMode(text, false);
+    }
     else if (camera && key == "mode") source["mode"] = text;
     else if (camera && key == "encoding" && (text == "original" || text == "h264")) source["encoding"] = text;
     else return false;
@@ -486,7 +505,9 @@ bool Backend::setSourceSetting(const QString &id, const QString &key, const QVar
     return saved;
 }
 
-QString Backend::addSource(const QString &kind) {
+QString Backend::addSource(const QString &kind) { return createSource(kind, {}); }
+
+QString Backend::createSource(const QString &kind, const QString &requestedDevice) {
     if (m_shuttingDown || m_session->busy() || (kind != "screen" && kind != "camera")) return {};
     auto sources = Sources::list(m_settings);
     if (sources.size() >= Sources::maximum) return {};
@@ -494,9 +515,16 @@ QString Backend::addSource(const QString &kind) {
     QJsonObject source{{"id", id}, {"kind", kind}, {"name", ""}, {"enabled", true}};
     if (kind == "screen") { source["target"] = "portal"; source["fps"] = 60; source["quality"] = "very_high"; }
     else {
-        // Without a free camera it starts switched off, so it cannot block a take.
-        const QString device = unusedCamera(sources);
-        source["device"] = device; source["mode"] = defaultMode(device, true); source["encoding"] = "original"; source["enabled"] = !device.isEmpty();
+        // A camera plugged in a moment ago should be the one this source gets. With
+        // none free, say so: an empty source would only sit there switched off.
+        rescanCameras();
+        const QString device = requestedDevice.isEmpty() ? unusedCamera(sources) : requestedDevice;
+        if (device.isEmpty()) {
+            fail(m_cameras.isEmpty() ? tr("No camera is connected. Connect one, then add it.")
+                : tr("Every connected camera already has a source. Connect another camera, then add it."));
+            return {};
+        }
+        source["device"] = device; source["mode"] = defaultMode(device, true); source["encoding"] = "original";
     }
     sources.append(source); m_settings["videoSources"] = sources;
     syncFeeds(); emit settingsChanged();
@@ -641,7 +669,8 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     else if (command == "configure") {
         for (auto it = options.begin(); it != options.end(); ++it) if (!setSetting(it.key(), it.value().toVariant())) ok = false;
     } else if (command == "source-add") {
-        added = addSource(request["kind"].toString()); ok = !added.isEmpty();
+        // A camera can be named outright; otherwise it gets the first free one.
+        added = createSource(request["kind"].toString(), request["kind"] == "camera" ? options["device"].toString() : QString()); ok = !added.isEmpty();
         if (ok) for (auto it = options.begin(); it != options.end(); ++it) if (!setSourceSetting(added, it.key(), it.value().toVariant())) ok = false;
     } else if (command == "source-set") {
         ok = !options.isEmpty();

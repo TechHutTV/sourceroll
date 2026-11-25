@@ -58,10 +58,13 @@ public:
     static std::optional<double> parsePeak(const QByteArray &line);
     static bool importLegacySettings(const QString &legacy, const QString &target, QString *error = nullptr);
     Q_INVOKABLE void refreshDevices();
+    // Look for cameras that were plugged in or removed, leaving the previews running.
+    Q_INVOKABLE void rescanCameras();
     // Recording-wide settings. The earlier keys for "the" screen and camera
     // (camera, mode, screenTarget, ...) still work and act on the first of each.
     Q_INVOKABLE bool setSetting(const QString &key, const QVariant &value);
-    // Returns the new source's id, or nothing when it cannot be added.
+    // Returns the new source's id, or nothing when it cannot be added. A camera
+    // source takes the first connected camera that no other source uses.
     Q_INVOKABLE QString addSource(const QString &kind);
     Q_INVOKABLE bool removeSource(const QString &id);
     Q_INVOKABLE bool setSourceSetting(const QString &id, const QString &key, const QVariant &value);
@@ -88,8 +91,10 @@ private:
     void stopPreviews();
     void stopScreenPreviews();
     void startScreenPreviews();
+    QString createSource(const QString &kind, const QString &device);
     bool setKindEnabled(const QString &kind, bool enabled);
     bool viewed() const { return m_visible || m_previewClients > 0; }
+    static QVariantList scanCameras();
     QString unusedCamera(const QJsonArray &sources) const;
     QString defaultMode(const QString &device, bool preferFullHd) const;
     QVariantList modesOf(const QString &device) const;

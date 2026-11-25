@@ -143,6 +143,8 @@ ApplicationWindow {
         // The entry the settings call for. The shown entry follows it, including
         // after the list is replaced or a choice is turned down.
         property int selected: -1
+        // The list is about to open: the moment to bring it up to date.
+        signal opening()
         function sync() { if (currentIndex !== selected) currentIndex = selected }
         onSelectedChanged: sync()
         onModelChanged: sync()
@@ -185,6 +187,7 @@ ApplicationWindow {
             background: Rectangle { radius: theme.radius; color: option.highlighted ? theme.style.hoverFill : "transparent" }
         }
         popup: Popup {
+            onAboutToShow: control.opening()
             y: control.height + 4; width: control.width
             padding: 1
             implicitHeight: Math.min(contentItem.implicitHeight + 2, 260)
@@ -452,6 +455,8 @@ ApplicationWindow {
                                     Layout.fillWidth: true; enabled: !win.busy; model: backend.cameras; textRole: "label"
                                     selected: win.indexOf(backend.cameras, section.source.device)
                                     displayText: selected < 0 ? qsTr("Select camera") : currentText
+                                    // Cameras come and go; show the ones connected right now.
+                                    onOpening: backend.rescanCameras()
                                     onActivated: backend.setSourceSetting(section.source.id, "device", model[currentIndex].id)
                                 }
                                 Caption { visible: !section.isScreen; text: qsTr("Resolution and frame rate") }

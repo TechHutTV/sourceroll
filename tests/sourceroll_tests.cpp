@@ -62,6 +62,7 @@ public:
     Q_INVOKABLE void stop() { recording = false; emit statusChanged(); }
     Q_INVOKABLE void openFolder() {}
     Q_INVOKABLE void refreshDevices() {}
+    Q_INVOKABLE void rescanCameras() { ++rescans; }
     Q_INVOKABLE bool recoverSession() { return true; }
     Q_INVOKABLE bool chooseScreen(const QString &id = {}) { chosen << id; emit screenChoiceRequested(); return true; }
     Q_INVOKABLE void shutdown() {}
@@ -91,6 +92,7 @@ public:
     bool recording = false;
     QString warning, displayWarning, monitorLayout;
     QStringList chosen;
+    int rescans = 0;
     QVariantList sources{
         QVariantMap{{"id", "screen"}, {"kind", "screen"}, {"name", ""}, {"enabled", true}, {"target", "portal"}, {"fps", 60}, {"quality", "very_high"}},
         QVariantMap{{"id", "camera"}, {"kind", "camera"}, {"name", ""}, {"enabled", true}, {"device", "demo"}, {"mode", "1080"}, {"encoding", "original"}}};
@@ -627,7 +629,20 @@ for line in sys.stdin:
             QVERIFY(!backend.handle({{"command","source-remove"},{"id",added}})["ok"].toBool());
             QVERIFY(backend.removeSource(third)); QVERIFY(sourceOf(backend, third).isEmpty());
 
-            while (!backend.addSource("camera").isEmpty()) {}
+            // A camera source is only added for a camera that is connected and free. However many
+            // this machine has, adding stops with an explanation rather than an empty source.
+            QVERIFY(backend.status()["error"].toString().isEmpty());
+            for (int i = 0; i < Sources::maximum && !backend.addSource("camera").isEmpty(); ++i) {}
+            if (backend.settings()["videoSources"].toList().size() < Sources::maximum) QVERIFY(backend.status()["error"].toString().contains("amera"));
+            for (const auto &value : backend.settings()["videoSources"].toList()) if (value.toMap()["kind"] == "camera") QVERIFY(!value.toMap()["device"].toString().isEmpty());
+            // The command line may name the device outright, and a first device switches a source on.
+            if (backend.settings()["videoSources"].toList().size() < Sources::maximum) {
+                reply = backend.handle({{"command","source-add"},{"kind","camera"},{"settings",QJsonObject{{"device","/dev/video9"},{"name","Overhead"}}}});
+                QVERIFY(reply["ok"].toBool()); QCOMPARE(sourceOf(backend, reply["id"].toString())["device"].toString(), "/dev/video9");
+                QVERIFY(sourceOf(backend, reply["id"].toString())["enabled"].toBool());
+                QVERIFY(backend.removeSource(reply["id"].toString()));
+            }
+            while (!backend.addSource("screen").isEmpty()) {}
             QCOMPARE(backend.settings()["videoSources"].toList().size(), Sources::maximum);
         }
         QFile saved(path); QVERIFY(saved.open(QIODevice::ReadOnly));
@@ -678,9 +693,8 @@ for line in sys.stdin:
         QTRY_VERIFY_WITH_TIMEOUT(state("screen")["previewState"].toString() == "live" && state("screen-2")["previewState"].toString() == "live", 10000);
         // A camera that is not set up yet is reported, without holding back the other previews;
         // switching it off again clears the report.
-        const auto unset = backend.addSource("camera");
-        if (!backend.settings()["videoSources"].toList().last().toMap()["device"].toString().isEmpty()) QVERIFY(backend.setSourceSetting(unset, "device", "not-a-device"));
-        QVERIFY(backend.setSourceSetting(unset, "enabled", true));
+        const auto unset = backend.handle({{"command","source-add"},{"kind","camera"},{"settings",QJsonObject{{"device","not-a-device"}}}})["id"].toString();
+        QVERIFY(!unset.isEmpty());
         QTRY_VERIFY_WITH_TIMEOUT(backend.status()["error"].toString().contains("select a camera"), 3000);
         QCOMPARE(state("screen")["previewState"].toString(), "live");
         QVERIFY(backend.setSourceSetting(unset, "enabled", false));
@@ -1032,7 +1046,9 @@ for line in sys.stdin:
         // Each camera source lists the devices and, below, the modes of the one it uses.
         auto cameraChoice = item("cameraChoice-camera"); QVERIFY(cameraChoice);
         QCOMPARE(cameraChoice->property("currentIndex").toInt(), 0);
+        QCOMPARE(backend.rescans, 0);
         click(cameraChoice);
+        QTRY_COMPARE(backend.rescans, 1); // opening the list looks for cameras plugged in since
         QTest::qWait(50); QTest::keyClick(window, Qt::Key_Down); QTest::keyClick(window, Qt::Key_Return);
         auto popup = cameraChoice->property("popup").value<QObject *>(); QVERIFY(popup);
         QTRY_VERIFY(!popup->property("visible").toBool());
