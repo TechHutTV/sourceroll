@@ -178,10 +178,7 @@ void Backend::syncFeeds() {
         if (source["kind"] == "camera" && !m_cameraFeeds.contains(id)) {
             const auto feed = new CameraFeed(this, m_cameraProgram);
             m_cameraFeeds[id] = feed;
-            connect(feed, &CameraFeed::frameReady, this, [this, id, feed] {
-                emit sourceFrame(id, feed->frameNumber());
-                if (id == firstSource("camera")) emit frameReady();
-            });
+            connect(feed, &CameraFeed::frameReady, this, [this, id, feed] { emit sourceFrame(id, feed->frameNumber()); });
             connect(feed, &CameraFeed::changed, this, &Backend::statusChanged);
             connect(feed, &CameraFeed::timestamp, this, [this, id](qint64 stamp) { m_session->cameraTimestamp(id, stamp); });
             connect(feed, &CameraFeed::stalled, this, [this, id, feed](bool starting) {
@@ -202,7 +199,8 @@ void Backend::syncFeeds() {
             feed->monitor().setEnabled(viewed());
             connect(&feed->monitor(), &ScreenMonitor::frameReady, this, [this, id, feed] {
                 emit sourceFrame(id, feed->monitor().frameNumber());
-                if (id == firstSource("screen")) emit screenFrameReady();
+                // The first picture makes the preview live; say so now rather than at the next tick.
+                if (feed->monitor().frameNumber() == 1) emit statusChanged();
             });
             connect(feed, &ScreenFeed::changed, this, &Backend::statusChanged);
         }
@@ -238,8 +236,7 @@ QByteArray Backend::sourceJpeg(const QString &id) const {
     return {};
 }
 
-int Backend::frameNumber() const { return frame(firstSource("camera")); }
-int Backend::screenFrameNumber() const { return frame(firstSource("screen")); }
+int Backend::sourceLimit() const { return Sources::maximum; }
 
 void Backend::refreshDevices() {
     if (m_session && m_session->busy()) return;
@@ -298,8 +295,6 @@ QVariantList Backend::modesOf(const QString &device) const {
     for (const auto &camera : m_cameras) if (camera.toMap()["id"].toString() == device) return camera.toMap()["modes"].toList();
     return {};
 }
-
-QVariantList Backend::modes() const { return modesOf(Sources::first(Sources::list(m_settings), "camera")["device"].toString()); }
 
 QString Backend::defaultMode(const QString &device, bool preferFullHd) const {
     const auto choices = modesOf(device);

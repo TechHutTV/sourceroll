@@ -17,11 +17,9 @@ class Backend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList cameras READ cameras NOTIFY devicesChanged)
     Q_PROPERTY(QVariantList microphones READ microphones NOTIFY devicesChanged)
-    Q_PROPERTY(QVariantList modes READ modes NOTIFY settingsChanged)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
-    Q_PROPERTY(int frameNumber READ frameNumber NOTIFY frameReady)
-    Q_PROPERTY(int screenFrameNumber READ screenFrameNumber NOTIFY screenFrameReady)
+    Q_PROPERTY(int sourceLimit READ sourceLimit CONSTANT)
     Q_PROPERTY(double peakDb READ peakDb NOTIFY peakChanged)
     Q_PROPERTY(double desktopPeakDb READ desktopPeakDb NOTIFY peakChanged)
     Q_PROPERTY(QVariantList screens READ screens NOTIFY devicesChanged)
@@ -34,12 +32,10 @@ public:
     ~Backend() override;
     QVariantList cameras() const { return m_cameras; }
     QVariantList microphones() const { return m_microphones; }
-    QVariantList modes() const;
     // Stored settings, plus the earlier single-source keys for the first screen and camera.
     QVariantMap settings() const;
     QVariantMap status() const;
-    int frameNumber() const;
-    int screenFrameNumber() const;
+    int sourceLimit() const;
     double peakDb() const { return m_peak; }
     double desktopPeakDb() const { return m_desktopPeak; }
     QVariantList screens() const { return m_screens; }
@@ -81,8 +77,6 @@ signals:
     void settingsChanged();
     void statusChanged();
     void sourceFrame(const QString &source, int number);
-    void frameReady();
-    void screenFrameReady();
     void peakChanged();
     void openRequested();
 private:

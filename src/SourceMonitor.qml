@@ -7,7 +7,6 @@ Rectangle {
     required property string feedState
     required property string emptyText
     required property bool recording
-    property bool sourceEnabled: true
     property bool canChoose: false
     signal chooseRequested()
     readonly property bool stale: feedState === "stalled" || feedState === "error"
@@ -44,11 +43,13 @@ Rectangle {
         height: 34; color: theme.colors.background
         Text {
             anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter
-            text: pane.sourceLabel; textFormat: Text.PlainText
+            anchors.right: status.left; anchors.rightMargin: 12
+            text: pane.sourceLabel; textFormat: Text.PlainText; elide: Text.ElideRight
             font.family: "monospace"; font.pixelSize: theme.style.fontSize
             color: theme.colors.foreground
         }
         Text {
+            id: status
             anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
             text: pane.stale ? qsTr("STALE") : pane.recording ? qsTr("REC") : pane.feedState === "live" ? qsTr("LIVE · PREVIEW") : ""

@@ -20,6 +20,8 @@
 #include "theme.h"
 #include "translator.h"
 
+// Stands in for the recorder behind the real window: the same properties and
+// calls, a list of sources that can be edited, and every preview "live".
 class DemoBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList cameras READ cameras CONSTANT)
@@ -27,38 +29,76 @@ class DemoBackend : public QObject {
     Q_PROPERTY(QVariantList screens READ screens CONSTANT)
     Q_PROPERTY(QVariantList desktopSources READ desktopSources CONSTANT)
     Q_PROPERTY(double desktopPeakDb READ desktopPeakDb CONSTANT)
-    Q_PROPERTY(QVariantList modes READ modes CONSTANT)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
-    Q_PROPERTY(int frameNumber READ frameNumber CONSTANT)
-    Q_PROPERTY(int screenFrameNumber READ frameNumber CONSTANT)
     Q_PROPERTY(double peakDb READ peakDb CONSTANT)
+    Q_PROPERTY(int sourceLimit READ sourceLimit CONSTANT)
 public:
-    QVariantList cameras() const { return {QVariantMap{{"id", "demo"}, {"label", "Studio Camera"}}}; }
+    QVariantList cameras() const {
+        return {QVariantMap{{"id", "demo"}, {"label", "Studio Camera"}, {"modes", QVariantList{QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}}},
+            QVariantMap{{"id", "overhead"}, {"label", "Overhead Camera"}, {"modes", QVariantList{QVariantMap{{"id", "720"}, {"label", "1280 × 720 · 60 fps · MJPEG"}}, QVariantMap{{"id", "480"}, {"label", "640 × 480 · 30 fps · YUYV422"}}}}},
+            QVariantMap{{"id", "refused"}, {"label", "Busy Camera"}, {"modes", QVariantList{}}}};
+    }
     QVariantList microphones() const { return {QVariantMap{{"id", "mic"}, {"label", "Studio Microphone"}}}; }
-    QVariantList screens() const { return {QVariantMap{{"id", "portal"}, {"label", "Choose screen or window"}}}; }
+    QVariantList screens() const { return {QVariantMap{{"id", "portal"}, {"label", "Screen/window picker"}}, QVariantMap{{"id", "DP-3"}, {"label", "DP-3 · Direct monitor capture"}}}; }
     QVariantList desktopSources() const { return {QVariantMap{{"id", "desktop"}, {"label", "Desktop audio"}}}; }
     double desktopPeakDb() const { return -28; }
-    QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
-    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Sourceroll"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}, {"monitorLayout", monitorLayout}}; }
-    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}}; }
-    int frameNumber() const { return 1; }
+    int sourceLimit() const { return Sources::maximum; }
+    QVariantMap settings() const { return {{"audio", "mic"}, {"directory", "/Videos/Sourceroll"}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"monitorLayout", monitorLayout}, {"videoSources", sources}}; }
+    QVariantMap status() const {
+        QVariantList video;
+        for (const auto &value : sources) {
+            const auto source = value.toMap(); const bool on = source["enabled"].toBool();
+            video.append(QVariantMap{{"id", source["id"]}, {"kind", source["kind"]}, {"name", source["name"]}, {"enabled", on}, {"previewState", on ? "live" : "inactive"},
+                {"previewError", ""}, {"selected", true}, {"selecting", false}, {"recording", recording && on}});
+        }
+        return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"videoSources", video}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}};
+    }
     double peakDb() const { return -18; }
+    QVariantMap source(const QString &id) const { for (const auto &value : sources) if (value.toMap()["id"] == id) return value.toMap(); return {}; }
+    Q_INVOKABLE int frame(const QString &) const { return 1; }
     Q_INVOKABLE void setWindowVisible(bool) {}
     Q_INVOKABLE void toggle() { recording = !recording; emit statusChanged(); }
     Q_INVOKABLE void stop() { recording = false; emit statusChanged(); }
     Q_INVOKABLE void openFolder() {}
     Q_INVOKABLE void refreshDevices() {}
     Q_INVOKABLE bool recoverSession() { return true; }
-    Q_INVOKABLE bool chooseScreen() { emit screenChoiceRequested(); return true; }
+    Q_INVOKABLE bool chooseScreen(const QString &id = {}) { chosen << id; emit screenChoiceRequested(); return true; }
     Q_INVOKABLE void shutdown() {}
     Q_INVOKABLE bool setSetting(const QString &key, const QVariant &value) { if (key == "monitorLayout") { monitorLayout = value.toString(); emit settingsChanged(); } return true; }
+    Q_INVOKABLE QString addSource(const QString &kind) {
+        const QString id = Sources::newId(QJsonArray::fromVariantList(sources), kind);
+        if (kind == "screen") sources.append(QVariantMap{{"id", id}, {"kind", kind}, {"name", ""}, {"enabled", true}, {"target", "portal"}, {"fps", 60}, {"quality", "very_high"}});
+        else sources.append(QVariantMap{{"id", id}, {"kind", kind}, {"name", ""}, {"enabled", true}, {"device", "overhead"}, {"mode", "720"}, {"encoding", "original"}});
+        emit settingsChanged(); emit statusChanged(); return id;
+    }
+    Q_INVOKABLE bool removeSource(const QString &id) {
+        for (int i = 0; i < sources.size(); ++i) if (sources[i].toMap()["id"] == id) { sources.removeAt(i); emit settingsChanged(); emit statusChanged(); return true; }
+        return false;
+    }
+    Q_INVOKABLE bool setSourceSetting(const QString &id, const QString &key, const QVariant &value) {
+        // A device the recorder turns down, so the list has to fall back to the stored one.
+        if (value == "refused") return false;
+        for (int i = 0; i < sources.size(); ++i) {
+            auto source = sources[i].toMap();
+            if (source["id"] != id) continue;
+            source[key] = key == "name" ? QVariant(Sources::cleanName(value.toString())) : value;
+            if (key == "device") source["mode"] = value == "overhead" ? "720" : "1080";
+            sources[i] = source; emit settingsChanged(); emit statusChanged(); return true;
+        }
+        return false;
+    }
     bool recording = false;
     QString warning, displayWarning, monitorLayout;
+    QStringList chosen;
+    QVariantList sources{
+        QVariantMap{{"id", "screen"}, {"kind", "screen"}, {"name", ""}, {"enabled", true}, {"target", "portal"}, {"fps", 60}, {"quality", "very_high"}},
+        QVariantMap{{"id", "camera"}, {"kind", "camera"}, {"name", ""}, {"enabled", true}, {"device", "demo"}, {"mode", "1080"}, {"encoding", "original"}}};
 signals:
     void statusChanged();
     void settingsChanged();
     void screenChoiceRequested();
+    void sourceFrame(const QString &source, int number);
 };
 
 class DemoPreview : public QQuickImageProvider {
@@ -68,10 +108,23 @@ public:
         QImage image(640, 360, QImage::Format_RGB32);
         for (int y = 0; y < 360; ++y) for (int x = 0; x < 640; ++x) {
             const bool circle = (x - 320)*(x - 320)+(y - 180)*(y - 180) < 95*95;
-            image.setPixelColor(x,y,id.startsWith("screen/") ? ((x / 80 + y / 45) % 2 ? QColor("#343944") : QColor("#20242b")) : circle ? QColor("#ffd60a") : QColor(18+x/18, 24+y/15, 38+x/25));
+            image.setPixelColor(x,y,id.startsWith("screen") ? ((x / 80 + y / 45) % 2 ? QColor("#343944") : QColor("#20242b")) : circle ? QColor("#ffd60a") : QColor(18+x/18, 24+y/15, 38+x/25));
         }
         *size = image.size(); return image;
     }
+};
+
+// The app's own preview provider lives in main.cpp; this serves the same images to the window under test.
+class BackendPreview : public QQuickImageProvider {
+public:
+    explicit BackendPreview(Backend *backend) : QQuickImageProvider(Image), m_backend(backend) {}
+    QImage requestImage(const QString &id, QSize *size, const QSize &) override {
+        auto image = m_backend->sourceImage(id.section('/', 0, 0));
+        if (image.isNull()) { image = QImage(64, 36, QImage::Format_RGB32); image.fill(Qt::black); }
+        *size = image.size(); return image;
+    }
+private:
+    Backend *m_backend;
 };
 
 class RecorderTests : public QObject {
@@ -85,6 +138,13 @@ private:
     }
     void write(const QString &path, const QByteArray &contents) {
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(contents), contents.size());
+    }
+    // Items made by a Repeater are in the visual tree but not the object tree, so findChild misses them.
+    static QQuickItem *visualChild(QQuickItem *root, const QString &name) {
+        if (!root) return nullptr;
+        if (root->objectName() == name) return root;
+        for (const auto child : root->childItems()) if (const auto found = visualChild(child, name)) return found;
+        return nullptr;
     }
     bool script(const QString &path, const QByteArray &contents) {
         QFile file(path);
@@ -122,6 +182,7 @@ while True:
 )") ? program : QString();
     }
 private slots:
+    void initTestCase() { QQuickStyle::setStyle("Material"); } // once, before any window loads
     void recordingTimecodesIncludeMillisecondsAndLongTakes() {
         QCOMPARE(SessionRecorder::recordingTimecode(689.123), "00:11:29.123");
         QCOMPARE(SessionRecorder::recordingTimecode(59.9999), "00:01:00.000");
@@ -808,8 +869,68 @@ for line in sys.stdin:
         QTRY_COMPARE(translator.language(), "en");
         QVERIFY(translator.translate("Main", "Open").isNull());
     }
+    void realWindowDrivesTheRealBackend() {
+        // The window's other test runs against a stand-in. This one checks the window
+        // and the real backend agree on names, calls and signals, end to end.
+        QTemporaryDir dir; const auto program = fakeScreenRecorder(dir); QVERIFY(!program.isEmpty());
+        write(dir.filePath("language"), "en\n");
+        const auto path = dir.filePath("settings.json");
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","screen"},{"name",""},{"enabled",true},{"target","DP-3"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","camera"},{"kind","camera"},{"name",""},{"enabled",false},{"device",""},{"mode",""},{"encoding","original"}}}}}).toJson());
+        Theme theme(dir.path()); Translator translator(dir.filePath("language"));
+        Backend backend(path, nullptr, program);
+        QQmlApplicationEngine engine;
+        engine.addImageProvider("preview", new BackendPreview(&backend));
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("initialVisible", true);
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) { for (const auto &e : errors) warnings << e.toString(); });
+        engine.load(QUrl("qrc:/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
+        auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        window->requestActivate(); QTest::qWait(300);
+        auto item = [&](const QString &name) { return visualChild(window->contentItem(), name); };
+        auto press = [&](const QString &name) { auto button = item(name); QVERIFY2(button, qPrintable(name)); QVERIFY(QMetaObject::invokeMethod(button, "clicked")); };
+        // Showing the window starts the preview of the enabled monitor; the camera is off and has no pane.
+        QVERIFY(item("monitor-screen")); QVERIFY(item("monitor-screen")->isVisible()); QVERIFY(!item("monitor-camera")->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(item("monitor-screen")->property("imageSource").toString().startsWith("image://preview/screen/"), 10000);
+        QTRY_COMPARE(item("monitor-screen")->property("feedState").toString(), "live");
+        QCOMPARE(item("cameraChoice-camera")->property("count").toInt(), backend.cameras().size());
+        // Adding a screen opens its picker and, once approved, shows it next to the first.
+        press("addScreen");
+        QTRY_VERIFY(item("monitor-screen-2"));
+        QVERIFY(backend.status()["screenSelecting"].toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(!item("monitor-screen-2")->property("imageSource").toString().isEmpty(), 10000);
+        QVERIFY(!backend.status()["screenSelecting"].toBool());
+        // A name typed in the window reaches the settings, the pane and, later, the file.
+        item("name-screen-2")->forceActiveFocus();
+        for (const char key : QByteArray("Left monitor")) QTest::keyClick(window, key);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(item("monitor-screen-2")->property("sourceLabel").toString(), "Left monitor");
+        QTRY_VERIFY(!window->property("typing").toBool());
+        // Point it at a monitor instead: the preview follows without another prompt. (A picked
+        // screen only counts as recording once PipeWire shows its link, which a stand-in never has.)
+        QVERIFY(backend.setSourceSetting("screen-2", "target", "HDMI-A-1"));
+        QTRY_COMPARE_WITH_TIMEOUT(item("monitor-screen-2")->property("feedState").toString(), "live", 10000);
+        QVERIFY(!backend.status()["screenSelecting"].toBool());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_COMPARE_WITH_TIMEOUT(backend.status()["state"].toString(), "recording", 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(item("monitor-screen")->property("recording").toBool() && item("monitor-screen-2")->property("recording").toBool(), 5000);
+        QVERIFY(!item("name-screen-2")->isEnabled()); QVERIFY(!item("addScreen")->isEnabled());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.status()["recording"].toBool(), 15000);
+        QCOMPARE(backend.status()["state"].toString(), "saved");
+        const auto take = backend.status()["output"].toString();
+        QVERIFY(QFileInfo::exists(take + "/screen.mkv")); QVERIFY(QFileInfo::exists(take + "/left-monitor.mkv"));
+        QTRY_VERIFY(item("name-screen-2")->isEnabled());
+        press("remove-screen-2");
+        QTRY_VERIFY(!item("monitor-screen-2")); QVERIFY(backend.settings()["videoSources"].toList().size() == 2);
+        window->setProperty("allowQuit", true); QVERIFY(window->close());
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
     void realQmlKeyboardHideAndScreenshots() {
-        QQuickStyle::setStyle("Material");
         QTemporaryDir dir; write(dir.filePath("language"), "en\n");
         Theme theme(dir.path()); Translator translator(dir.filePath("language"));
         qApp->installTranslator(&translator);
@@ -826,38 +947,91 @@ for line in sys.stdin:
         engine.load(QUrl("qrc:/Main.qml")); QVERIFY(!engine.rootObjects().isEmpty());
         auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
         window->requestActivate(); QTest::qWait(300);
-        auto screenMonitor = window->findChild<QQuickItem *>("screenMonitor"); QVERIFY(screenMonitor);
-        auto cameraMonitor = window->findChild<QQuickItem *>("cameraMonitor"); QVERIFY(cameraMonitor);
+        auto item = [&](const QString &name) { return visualChild(window->contentItem(), name); };
+        auto click = [&](QQuickItem *target) { QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, target->mapToScene(QPointF(target->width()/2, target->height()/2)).toPoint()); };
+        // Controls further down the source list can sit below the fold, so they are pressed directly.
+        auto press = [&](const QString &name) { auto button = item(name); QVERIFY2(button, qPrintable(name)); QVERIFY(QMetaObject::invokeMethod(button, "clicked")); };
+        auto screenMonitor = item("monitor-screen"); QVERIFY2(screenMonitor, qPrintable(warnings.join('\n')));
+        auto cameraMonitor = item("monitor-camera"); QVERIFY(cameraMonitor);
+        QVERIFY(screenMonitor->isVisible()); QVERIFY(cameraMonitor->isVisible()); QVERIFY(!item("monitorEmpty")->isVisible());
+        QCOMPARE(screenMonitor->property("imageSource").toString(), "image://preview/screen/1");
         const auto screenImage = screenMonitor->property("imageSource");
         screenMonitor->setProperty("imageSource", "");
         QSignalSpy selection(&backend, &DemoBackend::screenChoiceRequested);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, screenMonitor->mapToScene(QPointF(screenMonitor->width()/2, screenMonitor->height()/2)).toPoint());
-        QCOMPARE(selection.count(), 1);
+        click(screenMonitor);
+        QCOMPARE(selection.count(), 1); QCOMPARE(backend.chosen.last(), "screen");
         screenMonitor->setProperty("imageSource", screenImage);
-        for (const QString &view : {QString("screen"), QString("camera"), QString("both")}) {
-            auto button = window->findChild<QQuickItem *>("monitor" + view.left(1).toUpper() + view.mid(1)); QVERIFY(button);
-            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
+        for (const QString &view : {QString("screen"), QString("camera"), QString("all")}) {
+            auto button = item("monitor" + view.left(1).toUpper() + view.mid(1)); QVERIFY(button);
+            click(button);
             QTRY_COMPARE(window->property("monitorView").toString(), view);
             QCOMPARE(screenMonitor->isVisible(), view != "camera");
             QCOMPARE(cameraMonitor->isVisible(), view != "screen");
         }
-        auto layoutButton = window->findChild<QQuickItem *>("monitorLayout"); QVERIFY(layoutButton);
+        auto layoutButton = item("monitorLayout"); QVERIFY(layoutButton);
         QVERIFY(screenMonitor->y() == cameraMonitor->y()); // wide window starts side by side
         for (const QString &layout : {QString("stacked"), QString("side")}) {
-            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, layoutButton->mapToScene(QPointF(layoutButton->width()/2, layoutButton->height()/2)).toPoint());
+            click(layoutButton);
             QTRY_COMPARE(backend.monitorLayout, layout);
             QTRY_COMPARE(screenMonitor->y() == cameraMonitor->y(), layout == "side");
             QCOMPARE(screenMonitor->x() == cameraMonitor->x(), layout == "stacked");
         }
-        auto cameraChoice = window->findChild<QQuickItem *>("cameraChoice"); QVERIFY(cameraChoice);
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, cameraChoice->mapToScene(QPointF(cameraChoice->width()/2, cameraChoice->height()/2)).toPoint());
+        // Each camera source lists the devices and, below, the modes of the one it uses.
+        auto cameraChoice = item("cameraChoice-camera"); QVERIFY(cameraChoice);
+        QCOMPARE(cameraChoice->property("currentIndex").toInt(), 0);
+        click(cameraChoice);
         QTest::qWait(50); QTest::keyClick(window, Qt::Key_Down); QTest::keyClick(window, Qt::Key_Return);
         auto popup = cameraChoice->property("popup").value<QObject *>(); QVERIFY(popup);
         QTRY_VERIFY(!popup->property("visible").toBool());
+        QTRY_COMPARE(backend.source("camera")["device"].toString(), "overhead");
+        QTRY_COMPARE(cameraChoice->property("currentIndex").toInt(), 1);
+        QCOMPARE(backend.source("camera")["mode"].toString(), "720");
+        // A choice the recorder turns down falls back to the stored one.
+        QTest::qWait(250); click(cameraChoice);
+        QTest::qWait(50); QTest::keyClick(window, Qt::Key_Down); QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!popup->property("visible").toBool());
+        QTRY_COMPARE(cameraChoice->property("currentIndex").toInt(), 1);
+        QCOMPARE(backend.source("camera")["device"].toString(), "overhead");
         QTest::qWait(250); window->contentItem()->forceActiveFocus();
+
+        // Add a second screen: it gets a pane, a switch and its own settings, and opens its picker.
+        press("addScreen");
+        QTRY_VERIFY(item("monitor-screen-2"));
+        QCOMPARE(backend.chosen.last(), "screen-2");
+        QCOMPARE(item("monitor-screen-2")->property("sourceLabel").toString(), "Screen 2");
+        QCOMPARE(item("switch-screen-2")->property("text").toString(), "Screen 2");
+        QVERIFY(item("source-screen-2")); QVERIFY(item("monitor-screen-2")->isVisible());
+        screenMonitor = item("monitor-screen"); cameraMonitor = item("monitor-camera"); QVERIFY(screenMonitor); QVERIFY(cameraMonitor);
+        // Typing a name is not a shortcut: Space, Q and ? stay in the field.
+        auto name = item("name-screen-2"); QVERIFY(name);
+        QCOMPARE(name->property("hint").toString(), "Screen 2");
+        name->forceActiveFocus(); QTRY_VERIFY(window->property("typing").toBool());
+        for (const char key : QByteArray("Left monitor Q?")) QTest::keyClick(window, key);
+        QVERIFY(!backend.recording); QVERIFY(!window->property("helpVisible").toBool());
+        QVERIFY(!window->findChild<QObject *>("quitDialog")->property("visible").toBool());
+        QCOMPARE(name->property("text").toString(), "Left monitor Q?");
+        for (int i = 0; i < 3; ++i) QTest::keyClick(window, Qt::Key_Backspace);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(backend.source("screen-2")["name"].toString(), "Left monitor");
+        QTRY_COMPARE(item("monitor-screen-2")->property("sourceLabel").toString(), "Left monitor");
+        QCOMPARE(item("switch-screen-2")->property("text").toString(), "Left monitor");
+        QTRY_VERIFY(!window->property("typing").toBool()); // Enter gave the keyboard back
+        // Its switch takes it out of the take and the monitor, and brings it back.
+        click(item("switch-screen-2"));
+        QTRY_VERIFY(!backend.source("screen-2")["enabled"].toBool()); QTRY_VERIFY(!item("monitor-screen-2")->isVisible());
+        const int picks = backend.chosen.size();
+        click(item("switch-screen-2"));
+        QTRY_VERIFY(backend.source("screen-2")["enabled"].toBool()); QTRY_VERIFY(item("monitor-screen-2")->isVisible());
+        QCOMPARE(backend.chosen.size(), picks + 1); // a picked screen has to be approved again
+        // The view buttons filter by kind, whatever the number of sources.
+        click(item("monitorScreen"));
+        QTRY_VERIFY(!cameraMonitor->isVisible()); QVERIFY(screenMonitor->isVisible()); QVERIFY(item("monitor-screen-2")->isVisible());
+        click(item("monitorAll")); QTRY_VERIFY(cameraMonitor->isVisible());
+
         QTest::keyClick(window, Qt::Key_Space); QTRY_VERIFY(backend.recording);
-        auto displayWarning = window->findChild<QQuickItem *>("displayWarning"); QVERIFY(displayWarning);
-        auto captureWarning = window->findChild<QQuickItem *>("captureWarning"); QVERIFY(captureWarning);
+        QTRY_VERIFY(item("monitor-screen-2")->property("recording").toBool());
+        auto displayWarning = item("displayWarning"); QVERIFY(displayWarning);
+        auto captureWarning = item("captureWarning"); QVERIFY(captureWarning);
         QVERIFY(!displayWarning->isVisible());
         backend.displayWarning = "OmaControl is open during screen recording.";
         backend.warning = "Screen capture interrupted. Reconnecting…"; emit backend.statusChanged();
@@ -870,7 +1044,17 @@ for line in sys.stdin:
         QString path = qEnvironmentVariable("SOURCE_RECORD_SCREENSHOT");
         if (!path.isEmpty()) QVERIFY(screenshot.save(path));
         write(dir.filePath("language"), "da\n"); QTRY_COMPARE(translator.language(), "da"); QTest::qWait(150);
+        QCOMPARE(item("switch-camera")->property("text").toString(), "Kamera"); // unnamed sources follow the language
+        QCOMPARE(item("switch-screen-2")->property("text").toString(), "Left monitor");
         if (!path.isEmpty()) QVERIFY(window->grabWindow().save(QFileInfo(path).absolutePath() + "/screenshot-da.png"));
+        // Removing sources takes their panes with them, down to an empty monitor.
+        press("remove-screen-2");
+        QTRY_VERIFY(!item("monitor-screen-2")); QVERIFY(!item("source-screen-2")); QVERIFY(item("monitor-screen"));
+        press("remove-screen"); press("remove-camera");
+        QTRY_VERIFY(!item("monitor-camera")); QTRY_VERIFY(item("monitorEmpty")->isVisible());
+        QVERIFY(!item("monitorLayout")->isVisible());
+        press("addCamera");
+        QTRY_VERIFY(item("monitor-camera")); QVERIFY(!item("monitorEmpty")->isVisible());
         QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!window->isVisible());
         window->show(); QTest::qWait(50);
         QVERIFY(!window->close()); QVERIFY(!window->isVisible());

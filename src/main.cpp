@@ -33,9 +33,8 @@ class PreviewProvider : public QQuickImageProvider {
 public:
     explicit PreviewProvider(Backend *backend) : QQuickImageProvider(Image), m_backend(backend) {}
     QImage requestImage(const QString &id, QSize *size, const QSize &) override {
-        // "<source id>/<frame number>"; "frame" is the first camera's earlier address.
-        const QString source = id.section('/', 0, 0);
-        auto image = m_backend->sourceImage(source == "frame" ? m_backend->firstSource("camera") : source);
+        // "<source id>/<frame number>"; the number only makes each frame a new address.
+        auto image = m_backend->sourceImage(id.section('/', 0, 0));
         if (image.isNull()) { image = QImage(640, 360, QImage::Format_RGB32); image.fill(QColor("#12151a")); }
         *size = image.size(); return image;
     }
