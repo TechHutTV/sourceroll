@@ -7,11 +7,14 @@ The popup is part of the bar widget, so it does not declare a separate panel kin
 
 ## Install and use
 
-Install the Source Roll Arch package first, then run `bin/install-plugin` from the
-application repository. The installer validates this folder, backs up existing
-widget files and bar configuration, preserves placement during the Source Record
-rename, enables `local.sourceroll`, and restarts the existing Omarchy shell.
-It does not launch another Quickshell instance.
+Install the Source Roll Arch package first, then run `sourceroll-install-widget`,
+which the package provides, or `bin/install-plugin` from a checkout of the
+application repository. Both are the same installer. It validates this folder,
+backs up existing widget files and bar configuration, enables `local.sourceroll`,
+and restarts the existing Omarchy shell. A widget that is already on the bar,
+under this name or its former one, keeps its place; a new one goes on the right.
+It does not launch another Quickshell instance. Run it again after updating the
+package to refresh the widget.
 
 Click for monitoring, audio meters, source switches, and record/stop. The popup lists every screen and camera set up in the app, under the names given there. With more than one switched on, monitor tabs choose which to watch; the source switches choose what to save. Switching on a screen that uses the picker opens the native picker and a live preview before recording; Choose screen/window changes the selection while idle. Sources are added, named, and removed in the app.
 

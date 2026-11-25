@@ -1,0 +1,80 @@
+name: Draft release
+
+# Keeps one draft GitHub release up to date with the pull requests merged since
+# the last published release, grouped as .github/release-drafter.yml says.
+#
+# - push to master:  rewrites the draft, named and tagged v<version> after the
+#                    version in the source (bin/check-release).
+# - pull request:    labels it from its branch name, so it lands under the
+#                    right heading once merged.
+#
+# Publishing the draft on GitHub creates the tag and starts
+# .github/workflows/release.yml. Nothing is released until then.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+
+permissions: {}
+
+jobs:
+  draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # One at a time and in order, so a run for an older push cannot finish last
+    # and leave its version on the draft. The event is in the name so that the
+    # skipped copies of this job on pull requests never queue with the real ones.
+    concurrency:
+      group: draft-release-${{ github.event_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # All of the history, to find the first commit below.
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(bin/check-release)
+          # A published release keeps its tag, so the next draft waits for the next version.
+          if [ "$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "::notice::v$version is already released. The next draft starts once the version is raised."
+            exit 0
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          # Release Drafter compares with the last full release. Until there is one,
+          # pre-releases aside, the notes start at the first commit.
+          if [ -z "$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[].tagName')" ]; then
+            echo "from=$(git rev-list --max-parents=0 HEAD | tail -n 1)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
+        if: steps.version.outputs.tag != ''
+        with:
+          name: ${{ steps.version.outputs.tag }}
+          tag: ${{ steps.version.outputs.tag }}
+          from: ${{ steps.version.outputs.from }}
+
+  label:
+    # A pull request from a fork gets a read-only token. It stays unlabelled and
+    # is listed under "Other changes" unless someone labels it by hand.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0

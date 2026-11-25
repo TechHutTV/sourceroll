@@ -1,0 +1,33 @@
+# Maintainer: Brandon Hopkins <https://github.com/TechHutTV>
+pkgname=sourceroll
+pkgver=0.6.0
+pkgrel=1
+pkgdesc='Record screen, camera, microphone and desktop audio as separate synchronized takes'
+arch=('x86_64' 'aarch64')
+url='https://github.com/TechHutTV/sourceroll'
+license=('MIT')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'ffmpeg' 'libpulse' 'pipewire' 'gpu-screen-recorder' 'xdg-desktop-portal')
+optdepends=('pipewire-pulse: microphone and desktop audio through PipeWire'
+            'xdg-desktop-portal-hyprland: screen and window picker on Hyprland'
+            'hyprland: record a monitor directly, without the picker'
+            'python: install the Omarchy bar widget with sourceroll-install-widget')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # bin/aur-package puts the checksum of the release tarball here
+
+build() {
+  cd "$pkgname-$pkgver"
+  ./bin/build
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 build/sourceroll "$pkgdir/usr/bin/sourceroll"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 pkgbuild/sourceroll.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/sourceroll.svg"
+  install -Dm644 pkgbuild/sourceroll.desktop "$pkgdir/usr/share/applications/sourceroll.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/sourceroll/README.md"
+  install -d "$pkgdir/usr/share/sourceroll/plugin"
+  cp -R plugin/. "$pkgdir/usr/share/sourceroll/plugin/"
+  install -Dm755 bin/install-plugin "$pkgdir/usr/share/sourceroll/bin/install-plugin"
+  ln -s ../share/sourceroll/bin/install-plugin "$pkgdir/usr/bin/sourceroll-install-widget"
+}

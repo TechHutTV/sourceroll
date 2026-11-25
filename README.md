@@ -21,7 +21,20 @@ This is an early project. Streaming, scene compositing, headphone monitoring, an
 
 ## Install
 
-Source Roll currently builds from source on Arch Linux with Omarchy. You'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-sharing portal.
+Source Roll is for Arch Linux with Omarchy. Install it from the AUR, then add the bar widget:
+
+```sh
+yay -S sourceroll
+sourceroll-install-widget
+```
+
+The first command builds the app and adds it to your app launcher. The second needs no root: it copies the widget into your Omarchy plugins and restarts the Omarchy shell. Run it again after an update to refresh the widget; it stays where you put it on the bar.
+
+Each [release](https://github.com/TechHutTV/sourceroll/releases) also carries a built package for `sudo pacman -U`. It is built on current Arch, so update your system before installing it.
+
+### From a checkout
+
+To build the current source instead, you'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-sharing portal.
 
 ```sh
 git clone https://github.com/TechHutTV/sourceroll.git
@@ -82,7 +95,7 @@ bin/check-plugin
 
 `SOURCEROLL_HARDWARE=monitors bin/test` also records two connected monitors for a few seconds into a temporary folder.
 
-See the [verification notes](docs/verification.md) for test coverage and hardware checks. When reporting a bug, include your Omarchy version, capture devices, enabled sources, and the error shown in the app.
+See the [verification notes](docs/verification.md) for test coverage and hardware checks, and the [release guide](docs/releasing.md) for how a version reaches GitHub and the AUR. When reporting a bug, include your Omarchy version, capture devices, enabled sources, and the error shown in the app.
 
 ## License
 
