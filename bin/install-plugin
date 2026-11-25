@@ -10,8 +10,12 @@ import subprocess
 import tempfile
 import time
 
+# Works from a checkout and from the installed package, where the widget files
+# sit beside this script under /usr/share/sourceroll.
 root = Path(__file__).resolve().parents[1]
 home = Path.home()
+if not shutil.which('omarchy'):
+    raise SystemExit('The bar widget needs Omarchy, and the omarchy command was not found.')
 subprocess.run(['omarchy', 'plugin', 'validate', str(root / 'plugin')], check=True)
 legacy = home / '.config/omarchy/plugins/local.multitake'
 destination = home / '.config/omarchy/plugins/local.sourceroll'
@@ -46,9 +50,10 @@ if config.exists():
     layout = data.get('bar', {}).get('layout', {})
     for section, entries in layout.items():
         for entry in entries:
-            if isinstance(entry, dict) and entry.get('id') == 'local.multitake':
-                entry['id'] = 'local.sourceroll'
-                placed = True
+            if not isinstance(entry, dict): continue
+            if entry.get('id') == 'local.multitake': entry['id'] = 'local.sourceroll'
+            # A widget that is on the bar already stays where it was put.
+            if entry.get('id') == 'local.sourceroll': placed = True
     plugins = data.get('plugins', [])
     if isinstance(plugins, list):
         for index, entry in enumerate(plugins):
