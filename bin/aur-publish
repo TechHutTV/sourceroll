@@ -1,0 +1,38 @@
+#!/bin/sh
+# Pushes the PKGBUILD and .SRCINFO written by bin/aur-package to the AUR. The
+# first push creates the package there. It uses your SSH key for
+# aur@aur.archlinux.org and your Git name and email for the commit.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+from="${1:-$ROOT/build/aur}"
+remote="${AUR_REMOTE:-ssh://aur@aur.archlinux.org/sourceroll.git}"
+
+if [ ! -f "$from/PKGBUILD" ] || [ ! -f "$from/.SRCINFO" ]; then
+  echo "aur-publish: $from has no PKGBUILD and .SRCINFO. Run bin/aur-package first." >&2; exit 1
+fi
+field() { sed -n "s/^[[:space:]]*$1 = //p" "$from/.SRCINFO" | head -n 1; }
+release="$(field pkgver)-$(field pkgrel)"
+source=$(field source); url=${source#*::}
+expected=$(field sha256sums)
+
+# A push to the AUR cannot be taken back, so first download what its users will
+# download and compare. This also refuses the trial files of aur-package --local.
+actual=$(curl -fsSL --retry 3 "$url" | sha256sum | cut -d' ' -f1)
+if [ "$actual" != "$expected" ]; then
+  echo "aur-publish: the checksum in $from/PKGBUILD is not that of $url." >&2
+  echo "Publish the release so its tag exists, then run bin/aur-package again." >&2
+  exit 1
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+git clone --quiet "$remote" "$work/aur"
+cp "$from/PKGBUILD" "$from/.SRCINFO" "$work/aur/"
+cd "$work/aur"
+git add PKGBUILD .SRCINFO
+if git diff --cached --quiet; then
+  echo "The AUR already has sourceroll $release."; exit 0
+fi
+git commit --quiet -m "Update to $release"
+git push --quiet origin HEAD:master
+echo "Published sourceroll $release to the AUR."

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Prints the version this checkout would be released as. Fails when the copies
+# of the version disagree, or when the two package recipes ask for different
+# packages: a release is tagged from this number and built from aur/PKGBUILD.
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+version=$(sed -n 's/.*setApplicationVersion("\([^"]*\)").*/\1/p' "$ROOT/src/main.cpp" | head -n 1)
+failed=false
+problem() { echo "check-release: $*" >&2; failed=true; }
+
+echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
+  problem "src/main.cpp has the version '$version'; expected three numbers, such as 0.6.0"
+copy() { [ "$2" = "$version" ] || problem "$1 has the version '$2', src/main.cpp has '$version'"; }
+copy plugin/manifest.json "$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$ROOT/plugin/manifest.json" | head -n 1)"
+copy pkgbuild/PKGBUILD "$(sed -n 's/^pkgver=//p' "$ROOT/pkgbuild/PKGBUILD" | head -n 1)"
+copy aur/PKGBUILD "$(sed -n 's/^pkgver=//p' "$ROOT/aur/PKGBUILD" | head -n 1)"
+
+# A recipe is a Bash script, so Bash reads the list out of it.
+depends() { bash -c '. "$1" && printf "%s\n" "${depends[@]}"' depends "$ROOT/$1"; }
+[ "$(depends pkgbuild/PKGBUILD)" = "$(depends aur/PKGBUILD)" ] ||
+  problem "pkgbuild/PKGBUILD and aur/PKGBUILD list different depends"
+
+if $failed; then exit 1; fi
+echo "$version"

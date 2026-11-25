@@ -1,0 +1,39 @@
+#!/bin/sh
+# Writes what the AUR needs for this version, PKGBUILD and .SRCINFO, into
+# build/aur or the directory given. The checksum is taken from the release
+# tarball GitHub serves for the version's tag, so that tag has to exist.
+#
+#   bin/aur-package --local    uses a tarball of the current commit instead, to
+#                              try the recipe before the version is tagged
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+out="$ROOT/build/aur"
+local=false
+for argument in "$@"; do
+  case "$argument" in
+    --local) local=true ;;
+    -*) echo "Usage: bin/aur-package [--local] [DIRECTORY]" >&2; exit 2 ;;
+    *) out=$argument ;;
+  esac
+done
+
+version=$("$ROOT/bin/check-release")
+mkdir -p "$out"
+out="$(CDPATH= cd -- "$out" && pwd)"
+tarball="$out/sourceroll-$version.tar.gz"
+# makepkg takes a tarball it finds here over downloading one, so an earlier copy must go.
+rm -f "$tarball"
+if $local; then
+  git -C "$ROOT" archive --format=tar.gz --prefix="sourceroll-$version/" -o "$tarball" HEAD
+fi
+
+cp "$ROOT/aur/PKGBUILD" "$out/PKGBUILD"
+cd "$out"
+sums=$(SRCDEST="$out" makepkg --geninteg | grep '^sha256sums=')
+sed -i "s|^sha256sums=.*|$sums|" PKGBUILD
+makepkg --printsrcinfo > .SRCINFO
+if $local; then
+  echo "Wrote a trial PKGBUILD and .SRCINFO for $version to $out. Its checksum is of this commit, not of a release." >&2
+else
+  echo "Wrote PKGBUILD and .SRCINFO for $version to $out." >&2
+fi
