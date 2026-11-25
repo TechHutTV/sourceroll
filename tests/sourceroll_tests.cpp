@@ -613,6 +613,7 @@ for line in sys.stdin:
             QCOMPARE(names, (QStringList{"Screen", "Camera", "Left monitor", "Screen 3"}));
             QCOMPARE(states[0].toMap()["previewState"].toString(), "inactive"); QVERIFY(!states[0].toMap()["recording"].toBool());
             QVERIFY(states[2].toMap()["selected"].toBool()); QVERIFY(!states[3].toMap()["selected"].toBool());
+            QVERIFY(!states[2].toMap()["picker"].toBool()); QVERIFY(states[3].toMap()["picker"].toBool());
 
             // The command line reaches the same operations.
             auto reply = backend.handle({{"command","source-add"},{"kind","screen"},{"settings",QJsonObject{{"name","Right"},{"target","DP-3"},{"enabled",false}}}});

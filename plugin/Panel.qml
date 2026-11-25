@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
@@ -11,16 +12,23 @@ Ui.Panel {
     manageIpc: false
     property var anchorItem: null
     property var hostWidget: null
-    readonly property var status: hostWidget ? hostWidget.status : ({recording: false, state: "idle", cameraEnabled: true, screenEnabled: false, microphoneEnabled: true, desktopEnabled: false, elapsed: 0, error: "", output: ""})
+    readonly property var status: hostWidget ? hostWidget.status : ({recording: false, state: "idle", videoSources: [], microphoneEnabled: true, desktopEnabled: false, elapsed: 0, error: "", output: ""})
     readonly property bool changing: hostWidget ? hostWidget.changing : false
     readonly property bool unavailable: hostWidget ? hostWidget.unavailable : false
     readonly property real livePeak: hostWidget ? hostWidget.livePeak : -90
     readonly property real desktopPeak: hostWidget ? hostWidget.desktopPeak : -90
-    readonly property string monitorSource: hostWidget ? hostWidget.monitorSource : "camera"
-    readonly property string previewSource: hostWidget ? (monitorSource === "screen" ? hostWidget.screenPreviewSource : hostWidget.previewSource) : ""
-    readonly property string feedState: (monitorSource === "screen" ? status.screenPreviewState : status.cameraPreviewState) || "inactive"
+    // The screens and cameras set up in the app, and the one on show here.
+    readonly property var sources: status.videoSources || []
+    readonly property string monitorSource: hostWidget ? hostWidget.monitorSource : ""
+    readonly property var monitored: Model.find(sources, monitorSource)
+    readonly property bool monitoringScreen: monitored.kind === "screen"
+    readonly property int switchedOn: { let count = 0; for (let i = 0; i < sources.length; ++i) if (sources[i].enabled) ++count; return count }
+    readonly property string previewSource: hostWidget ? hostWidget.previewSource : ""
+    readonly property string feedState: monitored.previewState || "inactive"
     readonly property bool previewStale: feedState === "stalled" || feedState === "error"
-    readonly property bool sourceRecording: monitorSource === "screen" ? !!status.screenRecording : !!status.cameraRecording
+    readonly property bool sourceRecording: monitored.recording === true
+    // A source's own name; an older app reports none, so fall back to its kind.
+    function sourceName(source) { return source.name || strings.t(source.kind === "screen" ? "source.screen" : "source.camera") }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     function switchPanel(direction) {
         if (bar && typeof bar.switchPanelFrom === "function") return bar.switchPanelFrom(root.hostWidget || root, direction)
@@ -45,16 +53,27 @@ Ui.Panel {
                 width: parent.width
                 spacing: Style.space(12)
                 Text { textFormat: Text.PlainText; text: "Source Roll"; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body + 3; font.bold: true }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text { text: strings.t("monitor"); textFormat: Text.PlainText; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body }
-                    Item { Layout.fillWidth: true }
-                    Ui.Button { text: strings.t("source.screen"); selected: root.monitorSource === "screen"; onClicked: { root.hostWidget.monitorSource = "screen"; if (root.status.screenEnabled && !root.status.screenSelected && !root.status.recording && !root.status.screenSelecting) root.hostWidget.action("choose-screen") } }
-                    Ui.Button { text: strings.t("source.camera"); selected: root.monitorSource === "camera"; onClicked: root.hostWidget.monitorSource = "camera" }
+                Text { text: strings.t("monitor"); textFormat: Text.PlainText; visible: root.switchedOn > 1; color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body }
+                Flow {
+                    // One tab per source that is switched on; they only pick what to watch.
+                    Layout.fillWidth: true; spacing: Style.space(6)
+                    visible: root.switchedOn > 1
+                    Repeater {
+                        model: root.sources.length
+                        Ui.Button {
+                            required property int index
+                            readonly property var source: root.sources[index] || ({})
+                            visible: source.enabled === true
+                            width: Math.min(implicitWidth, parent.width)
+                            text: root.sourceName(source); selected: source.id === root.monitorSource
+                            onClicked: root.hostWidget.pickedSource = source.id
+                        }
+                    }
                 }
                 Text {
-                    Layout.fillWidth: true; textFormat: Text.PlainText
-                    text: strings.t(root.monitorSource === "screen" ? "source.screen" : "source.camera") + (root.previewStale ? " · " + strings.t("preview.stale") : root.sourceRecording ? " · REC" : root.feedState === "live" ? " · LIVE" : "")
+                    Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight
+                    visible: root.monitorSource !== ""
+                    text: root.sourceName(root.monitored) + (root.previewStale ? " · " + strings.t("preview.stale") : root.sourceRecording ? " · REC" : root.feedState === "live" ? " · LIVE" : "")
                     color: root.previewStale || root.sourceRecording ? Commons.Color.accent : Commons.Color.foreground
                     font.family: Style.font.family; font.pixelSize: Style.font.body
                 }
@@ -72,18 +91,23 @@ Ui.Panel {
                         fillMode: Image.PreserveAspectFit
                     }
                     MouseArea {
+                        // An empty pane leads to the fix: the picker for a picked screen, the app for anything else.
                         anchors.fill: parent
                         enabled: root.previewSource === "" && !root.status.recording && !root.status.screenSelecting
                         cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                         onClicked: {
-                            if (root.monitorSource === "screen") root.hostWidget.action("choose-screen")
+                            if (root.monitoringScreen && root.monitored.picker) root.hostWidget.chooseScreen(root.monitored)
                             else { root.hostWidget.action("open"); root.hostWidget.close() }
                         }
                     }
                     Text {
                         anchors.centerIn: parent; width: parent.width - 24
                         visible: root.previewSource === "" || root.previewStale || root.feedState === "waiting" || root.feedState === "inactive"; textFormat: Text.PlainText
-                        text: root.previewStale ? strings.t("preview.stalled") : root.monitorSource === "screen" ? (!root.status.screenEnabled ? strings.t("preview.screen.off") : (root.status.state === "waiting-screen" || root.status.screenSelecting) ? strings.t("choose.screen") : root.status.recording ? strings.t("preview.screen.waiting") : strings.t("preview.screen.idle")) : !root.status.cameraEnabled ? strings.t("preview.off") : root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening")
+                        text: root.previewStale ? strings.t("preview.stalled")
+                            : root.monitorSource === "" ? strings.t("preview.none")
+                            : !root.monitoringScreen ? (root.status.error ? strings.t("preview.unavailable") : strings.t("preview.opening"))
+                            : root.monitored.selecting ? strings.t("choose.screen")
+                            : root.status.recording || !root.monitored.picker ? strings.t("preview.screen.waiting") : strings.t("preview.screen.idle")
                         horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
                         style: Text.Outline; styleColor: Commons.Color.background
                         color: Commons.Color.foreground; font.family: Style.font.family; font.pixelSize: Style.font.body
@@ -91,10 +115,10 @@ Ui.Panel {
                 }
                 Ui.Button {
                     Layout.fillWidth: true
-                    visible: root.monitorSource === "screen"
+                    visible: root.monitoringScreen
                     text: strings.t("choose.screen.action")
                     enabled: !root.changing && !root.status.recording && !root.status.screenSelecting
-                    onClicked: root.hostWidget.action("choose-screen")
+                    onClicked: root.hostWidget.chooseScreen(root.monitored)
                 }
                 Text {
                     Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
@@ -103,9 +127,19 @@ Ui.Panel {
                     font.family: Style.font.family; font.pixelSize: Style.font.body
                 }
                 GridLayout {
+                    // The switches choose what a take saves: every screen and camera, then the two audio sources.
                     Layout.fillWidth: true; columns: 2
-                    Ui.Button { Layout.fillWidth: true; text: strings.t("source.screen"); selected: root.status.screenEnabled; enabled: !root.changing && !root.status.recording; onClicked: root.hostWidget.setSource("screen", !root.status.screenEnabled) }
-                    Ui.Button { Layout.fillWidth: true; text: strings.t("source.camera"); selected: root.status.cameraEnabled; enabled: !root.changing && !root.status.recording; onClicked: root.hostWidget.setSource("camera", !root.status.cameraEnabled) }
+                    Repeater {
+                        model: root.sources.length
+                        Ui.Button {
+                            required property int index
+                            readonly property var source: root.sources[index] || ({})
+                            Layout.fillWidth: true
+                            text: root.sourceName(source); selected: source.enabled === true
+                            enabled: !root.changing && !root.status.recording && !root.status.screenSelecting
+                            onClicked: root.hostWidget.setVideoSource(source, !source.enabled)
+                        }
+                    }
                     Ui.Button { Layout.fillWidth: true; text: strings.t("source.microphone"); selected: root.status.microphoneEnabled; enabled: !root.changing && !root.status.recording; onClicked: root.hostWidget.setSource("microphone", !root.status.microphoneEnabled) }
                     Ui.Button { Layout.fillWidth: true; text: strings.t("source.desktop"); selected: root.status.desktopEnabled; enabled: !root.changing && !root.status.recording; onClicked: root.hostWidget.setSource("desktop", !root.status.desktopEnabled) }
                 }

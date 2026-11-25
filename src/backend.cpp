@@ -370,7 +370,8 @@ QVariantMap Backend::status() const {
             const bool choosing = (feed && feed->selecting())
                 || (busy && sessionState == "waiting-screen" && portal && recorded.value(id).value("launched").toBool() && !writing.contains(id));
             entry["previewState"] = feed ? feed->state() : QString("inactive"); entry["previewError"] = feed ? feed->error() : QString();
-            entry["selected"] = !portal || (feed && feed->selected()); entry["selecting"] = choosing; entry["health"] = health;
+            // picker: switching this source on means asking which screen or window to share.
+            entry["picker"] = portal; entry["selected"] = !portal || (feed && feed->selected()); entry["selecting"] = choosing; entry["health"] = health;
             entry["recording"] = capturing && writing.contains(id) && !QStringList{"recovering", "failed", "starting"}.contains(health);
             if (choosing) selecting = true;
             if (firstScreen.isEmpty()) firstScreen = entry;

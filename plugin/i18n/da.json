@@ -8,7 +8,6 @@
   "open": "Åbn forhåndsvisning og indstillinger",
   "preview.opening": "Åbner kamera…",
   "preview.unavailable": "Kamera utilgængeligt",
-  "preview.off": "Kamerakilden er slået fra",
   "source.screen": "Skærm",
   "source.camera": "Kamera",
   "source.microphone": "Mikrofon",
@@ -18,8 +17,8 @@
   "monitor": "Monitor",
   "preview.stale": "FORÆLDET",
   "preview.stalled": "Forhåndsvisning er stoppet — kontrollér kilden",
-  "preview.screen.off": "Skærmkilden er slået fra",
   "preview.screen.waiting": "Venter på skærmvisning…",
   "preview.screen.idle": "Vælg en skærm eller et vindue til forhåndsvisning",
-  "choose.screen.action": "Vælg skærm/vindue"
+  "choose.screen.action": "Vælg skærm/vindue",
+  "preview.none": "Ingen skærm eller kamera er slået til"
 }

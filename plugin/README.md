@@ -13,7 +13,7 @@ widget files and bar configuration, preserves placement during the Source Record
 rename, enables `local.sourceroll`, and restarts the existing Omarchy shell.
 It does not launch another Quickshell instance.
 
-Click for Screen / Camera monitoring, audio meters, source switches, and record/stop. Monitor tabs choose what to watch; the source switches choose what to save. Enabling Screen opens the native picker and a live preview before recording; Choose screen/window changes the selection while idle.
+Click for monitoring, audio meters, source switches, and record/stop. The popup lists every screen and camera set up in the app, under the names given there. With more than one switched on, monitor tabs choose which to watch; the source switches choose what to save. Switching on a screen that uses the picker opens the native picker and a live preview before recording; Choose screen/window changes the selection while idle. Sources are added, named, and removed in the app.
 Middle-click starts/stops a take; right-click opens the app. Escape closes the
 popup. Omarchy shell summon/hide and neighbouring panel switching are supported.
 
@@ -31,8 +31,8 @@ Recorder, and the Wayland desktop portal. The native portal handles screen/windo
 sharing permission; this plugin does not replace its picker.
 
 The widget uses argument-array CLI calls and the user-only local Source Roll socket.
-It polls recording status, subscribes to audio peaks, and subscribes to screen and camera
-frames only while the popup is open. Preview and recording share the camera. Screen monitoring decodes a disposable copy of the recorded stream. Idle screen selection previews the approved source without saving video; the portal may restore the selection for recording.
+It polls recording status, subscribes to audio peaks, and subscribes to the frames of the
+one source on show, only while the popup is open. Preview and recording share the camera. Screen monitoring decodes a disposable copy of the recorded stream. Idle screen selection previews the approved source without saving video; the portal may restore the selection for recording.
 Opening the popup starts idle monitoring; recording starts only on an explicit
 record action. Closing the popup releases its preview subscription. There are no
 network requests, downloads, remote builds, separate services, or privileged
