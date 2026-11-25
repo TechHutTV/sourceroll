@@ -33,7 +33,8 @@ class PreviewProvider : public QQuickImageProvider {
 public:
     explicit PreviewProvider(Backend *backend) : QQuickImageProvider(Image), m_backend(backend) {}
     QImage requestImage(const QString &id, QSize *size, const QSize &) override {
-        auto image = id.startsWith("screen/") ? m_backend->screenImage() : m_backend->previewImage();
+        // "<source id>/<frame number>"; the number only makes each frame a new address.
+        auto image = m_backend->sourceImage(id.section('/', 0, 0));
         if (image.isNull()) { image = QImage(640, 360, QImage::Format_RGB32); image.fill(QColor("#12151a")); }
         *size = image.size(); return image;
     }
@@ -58,7 +59,7 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Source Roll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nsourceroll configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Source Roll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover [--json]\nsourceroll configure --audio SOURCE --directory PATH --microphone-enabled true|false --desktop-enabled true|false [--json]\nsourceroll source add screen|camera [OPTIONS] [--json]\nsourceroll source set ID [OPTIONS] [--json]\nsourceroll source remove ID [--json]\nsourceroll choose-screen [ID] [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nSource options: --name NAME --enabled true|false (--name=NAME for a name starting with --)\n  screens: --target portal|MONITOR --fps 15-120 --quality high|very_high|ultra\n  cameras: --device PATH --mode MODE --encoding original|h264\nSource IDs are listed under videoSources by settings and status.\nconfigure also accepts --camera, --mode, --encoding, --camera-enabled, --screen-enabled,\n--screen-target, --screen-fps and --screen-quality for the first camera and screen.\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
@@ -82,10 +83,45 @@ static int cli(const QStringList &args) {
         puts(QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
         return result["ok"].toBool() ? 0 : 1;
     }
-    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover", "choose-screen"}.contains(command)) {
+    if (!QStringList{"open", "status", "start", "stop", "toggle", "settings", "devices", "configure", "ensure", "recover", "choose-screen", "source"}.contains(command)) {
         fputs("Unknown command. Run sourceroll --help.\n", stderr); return 1;
     }
     QJsonObject request{{"command", command}};
+    if (command == "choose-screen" && args.size() > 2 && !args[2].startsWith("--")) request["id"] = args[2];
+    if (command == "source") {
+        // source add KIND [OPTIONS] | source set ID [OPTIONS] | source remove ID
+        const QString verb = args.value(2), subject = args.value(3);
+        if (!QStringList{"add", "set", "remove"}.contains(verb) || subject.isEmpty() || subject.startsWith("--")) {
+            fputs("Use: source add screen|camera, source set ID, or source remove ID.\n", stderr); return 1;
+        }
+        request["command"] = "source-" + verb;
+        request[verb == "add" ? "kind" : "id"] = subject;
+        QJsonObject settings;
+        for (int i = 4; i < args.size(); ++i) {
+            if (args[i] == "--json") continue;
+            // "--key VALUE", or "--key=VALUE" for a value that itself starts with "--".
+            QString key = args[i].mid(2), value;
+            const int equals = key.indexOf('=');
+            if (equals >= 0) { value = key.mid(equals + 1); key = key.left(equals); }
+            if (verb == "remove" || !args[i].startsWith("--") || !QStringList{"name", "enabled", "target", "fps", "quality", "device", "mode", "encoding"}.contains(key)) {
+                fputs("Invalid source option.\n", stderr); return 1;
+            }
+            if (equals < 0) {
+                // Another option where the value should be means the value was left out.
+                if (i + 1 >= args.size() || args[i + 1].startsWith("--")) { fputs(qPrintable(QString("--%1 needs a value.\n").arg(key)), stderr); return 1; }
+                value = args[++i];
+            }
+            if (key == "enabled") {
+                if (value != "true" && value != "false") { fputs("Source switches require true or false.\n", stderr); return 1; }
+                settings[key] = value == "true";
+            } else if (key == "fps") {
+                bool valid = false; const int rate = value.toInt(&valid);
+                if (!valid || rate < 15 || rate > 120) { fputs("Frame rate must be between 15 and 120.\n", stderr); return 1; }
+                settings[key] = rate;
+            } else settings[key] = value;
+        }
+        request["settings"] = settings;
+    }
     if (command == "configure") {
         QJsonObject settings;
         for (int i = 2; i < args.size(); ++i) {
@@ -139,7 +175,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("sourceroll"); app.setApplicationVersion("0.5.0");
+    app.setApplicationName("sourceroll"); app.setApplicationVersion("0.6.0");
     app.setDesktopFileName("sourceroll");
     app.setWindowIcon(QIcon::fromTheme("sourceroll"));
     app.setQuitOnLastWindowClosed(false);
@@ -172,28 +208,33 @@ int main(int argc, char *argv[]) {
             QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
             QObject::connect(socket, &QLocalSocket::readyRead, &backend, [&, socket] {
                 if (socket->bytesAvailable() > 65536) { socket->abort(); return; }
-                if (!socket->canReadLine()) return;
+                // Several requests can arrive together, such as a subscription and then a
+                // change of source. Take every complete line in order.
+                while (socket->canReadLine()) {
                 const auto request = QJsonDocument::fromJson(socket->readLine(65536)).object();
                 if (request["command"] == "subscribe-preview") {
-                    if (socket->property("previewSubscribed").toBool()) return;
+                    // A viewer shows one source at a time. Naming it, here or in a later
+                    // message on the same connection, keeps the others off the wire.
+                    socket->setProperty("previewSource", request["source"].toString());
+                    if (socket->property("previewSubscribed").toBool()) continue;
                     socket->setProperty("previewSubscribed", true);
                     backend.addPreviewClient();
                     QObject::connect(socket, &QLocalSocket::disconnected, &backend, &Backend::removePreviewClient);
-                    auto push = [&, socket](bool screen) {
-                        // Skip busy clients instead of queuing camera frames behind a slow shell.
+                    QObject::connect(&backend, &Backend::sourceFrame, socket, [&, socket](const QString &source) {
+                        // Skip busy clients instead of queuing frames behind a slow shell.
                         if (socket->state() != QLocalSocket::ConnectedState || socket->bytesToWrite() > 0) return;
-                        const auto jpeg = screen ? backend.screenJpeg() : backend.previewJpeg();
+                        const QString wanted = socket->property("previewSource").toString();
+                        if (!wanted.isEmpty() && wanted != source) return;
+                        const auto jpeg = backend.sourceJpeg(source);
                         if (jpeg.isEmpty() || jpeg.size() > 750000) return;
-                        const QJsonObject event{{"event", "preview"}, {"source", screen ? "screen" : "camera"}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
+                        const QJsonObject event{{"event", "preview"}, {"source", source}, {"jpeg", QString::fromLatin1(jpeg.toBase64())}};
                         socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
                         socket->flush();
-                    };
-                    QObject::connect(&backend, &Backend::frameReady, socket, [push] { push(false); });
-                    QObject::connect(&backend, &Backend::screenFrameReady, socket, [push] { push(true); });
-                    return;
+                    });
+                    continue;
                 }
                 if (request["command"] == "subscribe-meter") {
-                    if (socket->property("meterSubscribed").toBool()) return;
+                    if (socket->property("meterSubscribed").toBool()) continue;
                     socket->setProperty("meterSubscribed", true);
                     auto push = [&, socket] {
                         // A paused shell gets the next live reading, never a growing stale queue.
@@ -204,11 +245,14 @@ int main(int argc, char *argv[]) {
                     };
                     QObject::connect(&backend, &Backend::peakChanged, socket, push);
                     push();
-                    return;
+                    continue;
                 }
+                // Anything else is answered once, and that ends the connection.
                 const auto response = backend.handle(request);
                 socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
                 socket->flush(); socket->disconnectFromServer();
+                return;
+                }
             });
         }
     });

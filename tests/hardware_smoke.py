@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -37,10 +38,18 @@ def quit_resident():
 if call('status')['running']:
     raise SystemExit('Quit Source Roll first; the test will not disturb an existing session.')
 original = call('settings')['settings']
+sources = original.get('videoSources', [])
+camera = next((s for s in sources if s['kind'] == 'camera'), None)
+if camera is None:
+    raise SystemExit('Add a camera source first; the test records the first one.')
+text = lambda value: str(value).lower() if isinstance(value, bool) else str(value)
 with tempfile.TemporaryDirectory(prefix='sourceroll-smoke-') as directory:
     try:
-        call('configure', '--camera-enabled', 'true', '--microphone-enabled', 'true',
-             '--screen-enabled', 'false', '--desktop-enabled', 'false', '--encoding', 'h264', '--directory', directory)
+        # Record only the first camera and the microphone, whatever else is set up.
+        for source in sources:
+            call('source', 'set', source['id'], '--enabled', text(source is camera))
+        call('source', 'set', camera['id'], '--encoding', 'h264')
+        call('configure', '--microphone-enabled', 'true', '--desktop-enabled', 'false', '--directory', directory)
         call('start')
         for _ in range(100):
             time.sleep(.2)
@@ -53,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='sourceroll-smoke-') as directory:
         quit_resident()
         manifest = json.loads((output / 'session.json').read_text())
         assert manifest['state'] == 'complete', manifest
-        assert {s['id'] for s in manifest['sources']} == {'camera', 'microphone'}
+        assert sorted(s.get('source', s['id']) for s in manifest['sources']) == sorted([camera['id'], 'microphone'])
         assert (output / 'timeline.otio').is_file()
         for source in manifest['sources']:
             assert source['state'] == 'saved', source
@@ -64,15 +73,35 @@ with tempfile.TemporaryDirectory(prefix='sourceroll-smoke-') as directory:
         print(json.dumps({'state': manifest['state'], 'sources': [
             {k:s[k] for k in ('id','file','durationSeconds','startOffsetSeconds')} for s in manifest['sources']]}, indent=2))
     finally:
-        if call('status').get('recording'):
-            call('stop')
-            for _ in range(100):
-                time.sleep(.2)
-                if not call('status').get('recording'):
-                    break
-        restore = []
-        for key, value in original.items():
-            restore += ['--' + key, str(value).lower() if isinstance(value, bool) else str(value)]
-        call('configure', *restore)
-        quit_resident()
+        # Put everything back, each step on its own, so one that fails or times out does not
+        # leave the rest undone. The output folder is restored before the temporary one goes.
+        failures = []
+        def attempt(step, action):
+            try:
+                action()
+            except Exception as error:
+                failures.append(f'{step}: {error}')
+        def stop_take():
+            if call('status').get('recording'):
+                call('stop')
+                for _ in range(100):
+                    time.sleep(.2)
+                    if not call('status').get('recording'):
+                        break
+        def restore(source):
+            options = ['--enabled', text(source['enabled'])]
+            if source['kind'] == 'camera':
+                options += ['--encoding', source['encoding']]
+            call('source', 'set', source['id'], *options)
+        attempt('stop the take', stop_take)
+        for source in sources:
+            attempt('restore ' + source['id'], lambda source=source: restore(source))
+        attempt('restore audio switches and output folder', lambda: call(
+            'configure', '--microphone-enabled', text(original['microphoneEnabled']),
+            '--desktop-enabled', text(original['desktopEnabled']), '--directory', original['directory']))
+        attempt('quit the recorder', quit_resident)
+        if failures:
+            print('Not everything was put back:\n  ' + '\n  '.join(failures), file=sys.stderr)
+            if sys.exc_info()[0] is None:
+                raise SystemExit(1)
 print('Hardware smoke test passed; settings restored and recorder stopped.')

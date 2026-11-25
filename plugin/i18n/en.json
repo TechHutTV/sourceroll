@@ -8,7 +8,6 @@
   "open": "Open preview and settings",
   "preview.opening": "Opening camera…",
   "preview.unavailable": "Camera unavailable",
-  "preview.off": "Camera source is off",
   "source.screen": "Screen",
   "source.camera": "Camera",
   "source.microphone": "Microphone",
@@ -18,8 +17,8 @@
   "monitor": "Monitor",
   "preview.stale": "STALE",
   "preview.stalled": "Preview stalled — check the source",
-  "preview.screen.off": "Screen source is off",
   "preview.screen.waiting": "Waiting for screen preview…",
   "preview.screen.idle": "Choose a screen/window to preview",
-  "choose.screen.action": "Choose screen/window"
+  "choose.screen.action": "Choose screen/window",
+  "preview.none": "No screen or camera is switched on"
 }

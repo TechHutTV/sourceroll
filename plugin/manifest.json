@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "local.sourceroll",
   "name": "Source Roll",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": "Brandon",
   "description": "Record separate screen, camera, microphone and desktop audio sources with live monitoring",
   "kinds": [

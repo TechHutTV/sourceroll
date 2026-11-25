@@ -13,14 +13,23 @@ Ui.BarWidget {
     implicitHeight: button.implicitHeight
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
     readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
-    property var status: ({recording: false, state: "idle", cameraEnabled: true, screenEnabled: false, microphoneEnabled: true, desktopEnabled: false, elapsed: 0, peakDb: -90, error: "", output: ""})
+    property var status: ({recording: false, state: "idle", videoSources: [], microphoneEnabled: true, desktopEnabled: false, elapsed: 0, peakDb: -90, error: "", output: ""})
     property bool unavailable: false
     property bool changing: false
     property real livePeak: -90
     property real desktopPeak: -90
+    // The screens and cameras set up in the app, switched on or not.
+    readonly property var sources: status.videoSources || []
+    // The source the panel shows: the one picked there, else the first that is switched on.
+    property string pickedSource: ""
+    readonly property string monitorSource: Model.monitored(sources, pickedSource)
+    // Its newest frame. Only this source is asked for, so the others stay off the wire.
     property string previewSource: ""
-    property string screenPreviewSource: ""
-    property string monitorSource: status.screenEnabled ? "screen" : "camera"
+    onMonitorSourceChanged: { previewSource = ""; subscribePreview() }
+    function subscribePreview() {
+        if (!previewSocket.connected) return
+        previewSocket.write(JSON.stringify({command: "subscribe-preview", source: monitorSource}) + "\n"); previewSocket.flush()
+    }
     function open() { if (panelLoader.item) panelLoader.item.open() }
     function close() { if (panelLoader.item) panelLoader.item.close() }
     function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
@@ -40,7 +49,7 @@ Ui.BarWidget {
     }
     onOpenedChanged: {
         if (opened) { action("ensure"); refresh() }
-        else { previewSocket.connected = false; previewSource = ""; screenPreviewSource = "" }
+        else { previewSocket.connected = false; previewSource = "" }
     }
     function refresh() { if (!poll.running) poll.running = true }
     function action(command) {
@@ -49,27 +58,31 @@ Ui.BarWidget {
         control.command = ["sourceroll", command, "--json"]
         control.running = true
     }
-    function setSource(key, enabled) {
+    function run(command) {
         if (control.running || root.status.recording) return
         root.changing = true
-        control.command = key === "screen" && enabled ? ["sourceroll", "choose-screen", "--json"] : ["sourceroll", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]
+        control.command = command
         control.running = true
     }
+    // Microphone and desktop audio.
+    function setSource(key, enabled) { run(["sourceroll", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]) }
+    // A screen or camera. The model picks the command the running recorder understands.
+    function setVideoSource(source, enabled) { const command = Model.switchCommand(source, enabled); if (command) run(command) }
+    function chooseScreen(source) { const command = Model.chooseCommand(source); if (command) run(command) }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     Socket {
         id: previewSocket
         path: Quickshell.env("XDG_RUNTIME_DIR") + "/sourceroll.sock"
         onConnectionStateChanged: {
-            if (connected) { write('{"command":"subscribe-preview"}\n'); flush() }
-            else { root.previewSource = ""; root.screenPreviewSource = "" }
+            if (connected) root.subscribePreview()
+            else root.previewSource = ""
         }
         parser: SplitParser {
             splitMarker: "\n"
             onRead: function(data) {
-                const camera = Model.parsePreview(String(data), "camera")
-                const screen = Model.parsePreview(String(data), "screen")
-                if (camera !== null) root.previewSource = camera
-                if (screen !== null) root.screenPreviewSource = screen
+                // An older app sends every source; keep only the one on show.
+                const frame = root.monitorSource === "" ? null : Model.parsePreview(String(data), root.monitorSource)
+                if (frame !== null) root.previewSource = frame
             }
         }
     }
@@ -104,8 +117,7 @@ Ui.BarWidget {
                 poll.received = true
                 if (value) {
                     root.status = value; root.unavailable = false
-                    if (!value.cameraEnabled) root.previewSource = ""
-                    if (value.screenPreviewState === "inactive") root.screenPreviewSource = ""
+                    if ((Model.find(value.videoSources, root.monitorSource).previewState || "inactive") === "inactive") root.previewSource = ""
                     if (value.running && !meterSocket.connected) meterSocket.connected = true
                     if (!value.running && meterSocket.connected) meterSocket.connected = false
                     if (root.opened && value.running && !previewSocket.connected) previewSocket.connected = true
