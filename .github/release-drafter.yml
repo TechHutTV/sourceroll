@@ -1,0 +1,34 @@
+# Release Drafter keeps one draft release up to date with the pull requests
+# merged since the last published release. .github/workflows/draft-release.yml
+# runs it and names the draft after the version in the source.
+
+template: |
+  $CHANGES
+
+categories:
+  - title: 'New'
+    when:
+      label: 'enhancement'
+  - title: 'Fixed'
+    when:
+      label: 'bug'
+  # Everything else, including pull requests without a label.
+  - title: 'Other changes'
+  # Add this label to a pull request to leave it out of the notes.
+  - type: 'pre-exclude'
+    when:
+      label: 'skip-changelog'
+
+change-template: '- $TITLE (#$NUMBER)'
+change-title-escapes: '\<*_&'
+no-changes-template: '- No changes'
+
+# Pull requests get their label from the branch name, which is how branches are
+# already named here: feature/... and fix/...
+autolabeler:
+  - labels: ['enhancement']
+    branch:
+      - '/^feature\//'
+  - labels: ['bug']
+    branch:
+      - '/^fix\//'

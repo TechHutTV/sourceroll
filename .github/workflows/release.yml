@@ -1,0 +1,158 @@
+name: Release
+
+# The package job builds, tests and packages Source Roll in a clean Arch Linux
+# container, the way an AUR user's machine builds it. It runs on every pull
+# request as a rehearsal, from a tarball of that commit.
+#
+# Publishing a release (the draft kept by draft-release.yml) runs it for the
+# new tag. The publish job then attaches the built package to the release and
+# pushes PKGBUILD and .SRCINFO to the AUR.
+#
+# The AUR step needs the repository secret AUR_SSH_PRIVATE_KEY, whose public
+# half is on the AUR account; without it the step is skipped with a notice.
+# docs/releasing.md has the setup.
+
+on:
+  release:
+    types:
+      - published
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release to package and publish again, such as v0.6.0. Leave empty for a rehearsal.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: Build, test and package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Empty for a rehearsal.
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Install Git and the test tools
+        run: pacman -Syu --noconfirm --needed git nodejs python ttf-dejavu namcap
+
+      - uses: actions/checkout@v7
+        with:
+          # The tag for a release; otherwise the commit the run is for.
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install what the package depends on
+        run: |
+          . aur/PKGBUILD
+          pacman -S --noconfirm --needed "${depends[@]}"
+
+      - name: Add an unprivileged user
+        # makepkg refuses to run as root.
+        run: |
+          useradd --create-home builder
+          chown -R builder: .
+
+      - name: Check the version
+        id: version
+        run: |
+          version=$(bin/check-release)
+          if [ -n "$TAG" ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag $TAG does not match the version $version in the source."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        env:
+          # The runner has no GPU.
+          QT_QUICK_BACKEND: software
+        run: runuser -u builder -- env HOME=/home/builder bin/test
+
+      - name: Write the AUR files
+        run: |
+          if [ -n "$TAG" ]; then
+            runuser -u builder -- env HOME=/home/builder bin/aur-package
+          else
+            runuser -u builder -- env HOME=/home/builder bin/aur-package --local
+          fi
+
+      - name: Build the package
+        working-directory: build/aur
+        run: runuser -u builder -- env HOME=/home/builder makepkg
+
+      - name: Lint the package
+        working-directory: build/aur
+        # Advice for the log; it does not fail the run.
+        run: namcap PKGBUILD sourceroll-[0-9]*.pkg.tar.zst || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: |
+            build/aur/PKGBUILD
+            build/aur/.SRCINFO
+            build/aur/sourceroll-[0-9]*.pkg.tar.zst
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attach the package and publish to the AUR
+    needs: package
+    if: needs.package.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.package.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: build/aur
+
+      - name: Attach the package to the release
+        run: gh release upload "$TAG" build/aur/sourceroll-[0-9]*.pkg.tar.zst --clobber
+
+      - name: Publish to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          # The AUR's Ed25519 host key. Its fingerprint, as listed on https://aur.archlinux.org,
+          # is SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4.
+          AUR_HOST_KEY: aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::notice::No AUR_SSH_PRIVATE_KEY secret, so the AUR was not updated. Run bin/aur-package and bin/aur-publish by hand, or add the secret and run this workflow again for $TAG."
+            exit 0
+          fi
+          if [ "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" = "true" ]; then
+            echo "::notice::$TAG is a pre-release, so the AUR was not updated."
+            exit 0
+          fi
+          key="$RUNNER_TEMP/aur_key"
+          hosts="$RUNNER_TEMP/aur_known_hosts"
+          (umask 077 && printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$key")
+          printf '%s\n' "$AUR_HOST_KEY" > "$hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes"
+          # The AUR shows who made each commit: the person who published the release.
+          export GIT_AUTHOR_NAME="$GITHUB_ACTOR" GIT_AUTHOR_EMAIL="$GITHUB_ACTOR_ID+$GITHUB_ACTOR@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          bin/aur-publish build/aur
+          rm -f "$key"
