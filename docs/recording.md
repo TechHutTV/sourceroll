@@ -83,7 +83,7 @@ bin/check-plugin
 bin/install
 ```
 
-`bin/install` builds an Arch package and installs the user widget. Password entry uses the native terminal prompt. Plugin installation backs up previous files and bar configuration, then restarts the shell to clear cached QML. The recorder runs separately, so a shell restart keeps active takes recording. No files under `/usr/share/omarchy` are edited.
+`bin/install` builds an Arch package from the checkout and installs the user widget. A released version installs from the AUR instead, with `yay -S sourceroll` and then `sourceroll-install-widget` for the widget; the [release guide](releasing.md) covers how versions get there. Password entry uses the native terminal prompt. Plugin installation backs up previous files and bar configuration, then restarts the shell to clear cached QML. The recorder runs separately, so a shell restart keeps active takes recording. No files under `/usr/share/omarchy` are edited.
 
 Settings are saved atomically in `~/.config/sourceroll/settings.json`. New installations default to `~/Videos/Sourceroll`. Settings from before screens and cameras were a list are read as one screen and one camera, and are rewritten in the new form the next time a setting changes; a version of the app from before that change would then fall back to its defaults for them. Existing Source Record settings are imported once when no Source Roll settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
 
