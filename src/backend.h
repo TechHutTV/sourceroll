@@ -106,7 +106,7 @@ private:
     QByteArray m_frames, m_messages, m_log;
     QByteArray m_previewJpeg;
     QImage m_image;
-    QString m_state = "idle", m_error, m_output, m_lastOutput;
+    QString m_state = "idle", m_error, m_output, m_lastOutput, m_cameraSource = "camera";
     double m_peak = -90;
     double m_pendingPeak = -90;
     double m_desktopPeak = -90;

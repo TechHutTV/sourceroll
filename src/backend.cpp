@@ -135,19 +135,19 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
     if (!m_settings.contains("screenFps")) m_settings["screenFps"] = 60;
     if (!m_settings.contains("screenQuality")) m_settings["screenQuality"] = "very_high";
     m_session = new SessionRecorder(this);
-    connect(m_session, &SessionRecorder::screenStarting, &m_screenMonitor, &ScreenMonitor::start);
-    connect(m_session, &SessionRecorder::screenStopped, &m_screenMonitor, &ScreenMonitor::stop);
-    connect(m_session, &SessionRecorder::screenData, &m_screenMonitor, &ScreenMonitor::feed);
-    connect(m_session, &SessionRecorder::screenData, this, [this](const QByteArray &bytes) { if (!bytes.isEmpty()) m_screenSelected = true; });
+    connect(m_session, &SessionRecorder::screenStarting, &m_screenMonitor, [this] { m_screenMonitor.start(); });
+    connect(m_session, &SessionRecorder::screenStopped, &m_screenMonitor, [this] { m_screenMonitor.stop(); });
+    connect(m_session, &SessionRecorder::screenData, this, [this](const QString &, const QByteArray &bytes) { m_screenMonitor.feed(bytes); if (!bytes.isEmpty()) m_screenSelected = true; });
     connect(&m_screenMonitor, &ScreenMonitor::frameReady, this, &Backend::screenFrameReady);
     connect(m_session, &SessionRecorder::changed, this, &Backend::statusChanged);
     connect(m_session, &SessionRecorder::levels, this, [this](double mic, double desktop) { m_peak = mic; m_desktopPeak = desktop; emit peakChanged(); });
-    connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &file) {
+    connect(m_session, &SessionRecorder::cameraStartRequested, this, [this](const QString &source, const QString &file) {
+        m_cameraSource = source;
         m_lastFrame.invalidate(); m_frameNumber = 0; m_image = {}; m_previewJpeg.clear(); emit frameReady();
         m_output = file; m_recording = true; m_state = "starting"; m_frames.clear(); m_messages.clear(); m_log.clear();
         m_process.start("ffmpeg", ffmpegArguments(m_settings, file, true)); m_watchdog.start();
     });
-    connect(m_session, &SessionRecorder::cameraStopRequested, this, [this] {
+    connect(m_session, &SessionRecorder::cameraStopRequested, this, [this](const QString &) {
         if (m_process.state() != QProcess::NotRunning) { m_process.write("q\n");
             QTimer::singleShot(8000, this, [this] { if (m_stopping || m_session->busy()) { if (m_process.state() != QProcess::NotRunning) m_process.kill(); } });
         }
@@ -157,7 +157,7 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
     connect(&m_process, &QProcess::readyReadStandardError, this, &Backend::consumeMessages);
     connect(&m_process, &QProcess::finished, this, &Backend::finish);
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { if (m_session->busy()) { m_session->cameraFinished(1, m_process.errorString()); return; } m_recording = false; fail(tr("FFmpeg could not start: %1").arg(m_process.errorString())); }
+        if (error == QProcess::FailedToStart) { if (m_session->busy()) { m_session->cameraFinished(m_cameraSource, 1, m_process.errorString()); return; } m_recording = false; fail(tr("FFmpeg could not start: %1").arg(m_process.errorString())); }
     });
     m_tick.setInterval(250);
     connect(&m_tick, &QTimer::timeout, this, [this] {
@@ -400,7 +400,7 @@ bool Backend::start() {
     }
     if (!saveSettings()) return false;
     stopScreenPreview(); stopProcess(); m_error.clear(); m_screenSelectionError.clear();
-    return m_session->start(m_settings, m_portalCache.filePath("restore-token"));
+    return m_session->start(m_settings, {{"screen", m_portalCache.filePath("restore-token")}});
 }
 
 void Backend::stopScreenPreview() {
@@ -503,7 +503,7 @@ void Backend::consumeMessages() {
     for (;;) {
         auto end = m_messages.indexOf('\n'); if (end < 0) break;
         auto line = m_messages.left(end).trimmed(); m_messages.remove(0, end + 1);
-        if (m_recording) { const auto stamp = SessionRecorder::packetTimestamp(line); if (stamp) m_session->cameraTimestamp(stamp); }
+        if (m_recording) { const auto stamp = SessionRecorder::packetTimestamp(line); if (stamp) m_session->cameraTimestamp(m_cameraSource, stamp); }
     }
     if (m_messages.size() > 65536) m_messages.clear();
 }
@@ -522,7 +522,7 @@ std::optional<double> Backend::parsePeak(const QByteArray &line) {
 void Backend::finish(int code, QProcess::ExitStatus exitStatus) {
     m_watchdog.stop(); consumeMessages();
     const bool wasRecording = m_recording; m_recording = false; m_state = "idle";
-    if (wasRecording || m_session->busy()) { m_session->cameraFinished(code, QString::fromUtf8(m_log.right(1000))); emit statusChanged(); return; }
+    if (wasRecording || m_session->busy()) { m_session->cameraFinished(m_cameraSource, code, QString::fromUtf8(m_log.right(1000))); emit statusChanged(); return; }
     if (!m_shuttingDown && !m_stopping && (code != 0 || exitStatus != QProcess::NormalExit)) fail(tr("Camera preview failed. %1").arg(QString::fromUtf8(m_log.right(1400))));
     emit statusChanged();
 }

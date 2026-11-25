@@ -81,7 +81,7 @@
   "The screen capture node reported an error.": "Skærmoptagelsen rapporterede en fejl.",
   "PipeWire could not allocate screen capture buffers.": "PipeWire kunne ikke allokere buffere til skærmoptagelsen.",
   "The screen capture connection was lost.": "Forbindelsen til skærmoptagelsen blev afbrudt.",
-  "Screen connection monitoring is unavailable. Check the screen preview while recording.": "Overvågning af skærmforbindelsen er ikke tilgængelig. Kontrollér forhåndsvisningen under optagelsen.",
+  "%1: connection monitoring is unavailable. Check its preview while recording.": "%1: Overvågning af forbindelsen er ikke tilgængelig. Kontrollér dens forhåndsvisning under optagelsen.",
   "Screen recorder exited. %1": "Skærmoptageren stoppede. %1",
   "The screen recorder stopped producing data.": "Skærmoptageren holdt op med at levere data.",
   "The replacement screen capture did not deliver a frame.": "Den nye skærmoptagelse leverede intet billede.",
@@ -89,9 +89,9 @@
   "OmaControl is open during screen recording. Changing display settings can interrupt capture. Wait until recording has finished before changing displays.": "OmaControl er åben under skærmoptagelsen. Ændring af skærmindstillinger kan afbryde optagelsen. Vent med at ændre skærme, til optagelsen er afsluttet.",
   "Saved with screen interruptions": "Gemt med afbrydelser i skærmoptagelsen",
   "Reconnecting screen…": "Genopretter skærmforbindelsen…",
-  "Screen capture could not recover at %1 after three retries. Existing files have been kept. %2": "Skærmoptagelsen kunne ikke genoprettes ved %1 efter tre forsøg. Eksisterende filer er bevaret. %2",
-  "Screen capture interrupted at %1. Reconnecting (attempt %2 of 3); camera and audio continue. There will be a gap in the screen track.": "Skærmoptagelsen blev afbrudt ved %1. Genopretter forbindelsen (forsøg %2 af 3); kamera og lyd fortsætter. Der vil være et hul i skærmsporet.",
-  "Screen capture resumed. Check the interruption at %1 before editing.": "Skærmoptagelsen fortsætter. Kontrollér afbrydelsen ved %1 før redigering.",
+  "%1 capture could not recover at %2 after three retries. Existing files have been kept. %3": "Optagelsen af %1 kunne ikke genoprettes ved %2 efter tre forsøg. Eksisterende filer er bevaret. %3",
+  "%1 capture interrupted at %2. Reconnecting (attempt %3 of 3); other sources continue. There will be a gap in its track.": "Optagelsen af %1 blev afbrudt ved %2. Genopretter forbindelsen (forsøg %3 af 3); de andre kilder fortsætter. Der vil være et hul i dens spor.",
+  "%1 capture resumed. Check the interruption at %2 before editing.": "Optagelsen af %1 fortsætter. Kontrollér afbrydelsen ved %2 før redigering.",
   "Saved with screen interruptions at %1. Check these points and the timeline gaps before editing.": "Gemt med afbrydelser i skærmoptagelsen ved %1. Kontrollér disse punkter og hullerne i tidslinjen før redigering.",
   "unknown time": "ukendt tidspunkt"
 }
