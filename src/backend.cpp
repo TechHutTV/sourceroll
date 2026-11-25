@@ -317,18 +317,24 @@ bool Backend::validSettings(const QJsonObject &s, QString *error) {
     auto reject = [&](const QString &message) { if (error) *error = message; return false; };
     const auto cameras = Sources::enabled(s, "camera");
     if (cameras.isEmpty()) return QDir::isAbsolutePath(s["directory"].toString()) && SessionRecorder::validateSources(s, error);
-    QStringList devices;
-    for (const auto &value : cameras) {
-        const auto camera = value.toObject();
-        if (!CameraFeed::valid(camera, error)) return false;
-        // A V4L2 device opens once, so two sources cannot share it.
-        const QString resolved = QFileInfo(camera["device"].toString()).canonicalFilePath();
-        const QString device = resolved.isEmpty() ? camera["device"].toString() : resolved;
-        if (devices.contains(device)) return reject(tr("%1 uses a camera that another source already records. Choose a different camera for it.").arg(Sources::label(camera)));
-        devices << device;
-    }
+    for (int i = 0; i < cameras.size(); ++i) if (!validCamera(cameras, i, error)) return false;
     if (s["audio"].toString().isEmpty()) return reject(tr("Select an audio source or No audio."));
     if (!QDir::isAbsolutePath(s["directory"].toString())) return reject(tr("The output folder must be an absolute path."));
+    return true;
+}
+
+bool Backend::validCamera(const QJsonArray &cameras, int index, QString *error) {
+    const auto camera = cameras[index].toObject();
+    if (!CameraFeed::valid(camera, error)) return false;
+    // A V4L2 device opens once, so two sources cannot share it. The same device can go by two paths.
+    auto device = [](const QJsonValue &source) {
+        const QString path = source.toObject()["device"].toString(), resolved = QFileInfo(path).canonicalFilePath();
+        return resolved.isEmpty() ? path : resolved;
+    };
+    for (int i = 0; i < index; ++i) if (device(cameras[i]) == device(cameras[index])) {
+        if (error) *error = tr("%1 uses a camera that another source already records. Choose a different camera for it.").arg(Sources::label(camera));
+        return false;
+    }
     return true;
 }
 
@@ -518,17 +524,18 @@ void Backend::launch() {
     if (m_shuttingDown || m_session->busy()) return;
     m_session->previewAudio(m_settings, true);
     startScreenPreviews();
+    // Each camera previews on its own, so one that is not set up yet does not
+    // hold back the rest. What is still wrong is reported; what was fixed is cleared.
     const auto cameras = Sources::enabled(m_settings, "camera");
-    QString error;
-    if (!cameras.isEmpty() && !validSettings(m_settings, &error)) { fail(error); return; }
-    bool started = false;
-    for (const auto &value : cameras) {
-        const auto camera = value.toObject();
+    QString problem;
+    for (int i = 0; i < cameras.size(); ++i) {
+        const auto camera = cameras[i].toObject();
         const auto feed = m_cameraFeeds.value(camera["id"].toString());
-        if (!feed || feed->running()) continue;
-        feed->preview(camera); started = true;
+        QString error;
+        if (!validCamera(cameras, i, &error)) { if (problem.isEmpty()) problem = error; continue; }
+        if (feed && !feed->running()) feed->preview(camera);
     }
-    if (started) m_error.clear();
+    m_error = problem;
     emit statusChanged();
 }
 

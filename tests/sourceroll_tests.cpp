@@ -676,6 +676,16 @@ for line in sys.stdin:
         QVERIFY(!state("screen")["recording"].toBool()); QCOMPARE(state("screen")["health"].toString(), "inactive");
         // Afterwards the previews come back by themselves.
         QTRY_VERIFY_WITH_TIMEOUT(state("screen")["previewState"].toString() == "live" && state("screen-2")["previewState"].toString() == "live", 10000);
+        // A camera that is not set up yet is reported, without holding back the other previews;
+        // switching it off again clears the report.
+        const auto unset = backend.addSource("camera");
+        if (!backend.settings()["videoSources"].toList().last().toMap()["device"].toString().isEmpty()) QVERIFY(backend.setSourceSetting(unset, "device", "not-a-device"));
+        QVERIFY(backend.setSourceSetting(unset, "enabled", true));
+        QTRY_VERIFY_WITH_TIMEOUT(backend.status()["error"].toString().contains("select a camera"), 3000);
+        QCOMPARE(state("screen")["previewState"].toString(), "live");
+        QVERIFY(backend.setSourceSetting(unset, "enabled", false));
+        QTRY_VERIFY_WITH_TIMEOUT(backend.status()["error"].toString().isEmpty(), 3000);
+        QVERIFY(backend.removeSource(unset));
         // Turning one source off stops only its preview.
         QVERIFY(backend.setSourceSetting("screen-2", "enabled", false));
         QCOMPARE(state("screen-2")["previewState"].toString(), "inactive"); QCOMPARE(state("screen")["previewState"].toString(), "live");

@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QTimer>
 #include <QVariantList>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QImage>
 #include <QHash>
@@ -50,6 +51,8 @@ public:
     QJsonObject handle(const QJsonObject &request);
     static QVariantList cameraModes(const QString &device);
     static bool validSettings(const QJsonObject &settings, QString *error);
+    // One of the enabled cameras: its own settings, and no device shared with an earlier one.
+    static bool validCamera(const QJsonArray &cameras, int index, QString *error);
     static QString socketPath();
     static bool omaControlOpen(const QByteArray &layers);
     static std::optional<double> parsePeak(const QByteArray &line);
