@@ -18,5 +18,5 @@
     "allowMultiple": false,
     "defaultSection": "right"
   },
-  "license": "MIT"
+  "license": "GPL-3.0-or-later"
 }

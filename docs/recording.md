@@ -128,4 +128,4 @@ Remove `~/.config/omarchy/plugins/local.sourceroll` if no longer wanted. Setting
 
 Up to eight screens, windows, and V4L2 cameras, one microphone, and one desktop audio source can be recorded per take. Discrete MJPEG, H.264, and YUYV camera modes are supported. More than one microphone, live compositing, streaming, transitions, and headphone monitoring are outside this version.
 
-MIT licensed. Theme and language integration follow Omarchy's Omacut/Monologue templates, with attribution in LICENSE. English and Danish catalogs are included, with live theme/language changes and English fallback.
+Licensed under the GNU General Public License, version 3 or later. Theme and language integration follow Omarchy's Omacut/Monologue templates, which are MIT licensed; their notice is kept in NOTICE. English and Danish catalogs are included, with live theme/language changes and English fallback.

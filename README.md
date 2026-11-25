@@ -86,4 +86,4 @@ See the [verification notes](docs/verification.md) for test coverage and hardwar
 
 ## License
 
-[MIT](LICENSE).
+Source Roll is free software under the [GNU General Public License](LICENSE), version 3 or later. The theme and translation code adapted from Omarchy's templates keeps its MIT notice in [NOTICE](NOTICE).

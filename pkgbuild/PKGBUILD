@@ -3,7 +3,7 @@ pkgver=0.6.0
 pkgrel=1
 pkgdesc='Record screen, camera, microphone and desktop audio as separate synchronized takes'
 arch=('x86_64' 'aarch64')
-license=('MIT')
+license=('GPL-3.0-or-later')
 conflicts=('multitake')
 replaces=('multitake')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-svg' 'ffmpeg' 'libpulse' 'pipewire' 'gpu-screen-recorder' 'xdg-desktop-portal')
@@ -20,6 +20,7 @@ package() {
   cd "$startdir/.."
   install -Dm755 build/sourceroll "$pkgdir/usr/bin/sourceroll"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
   install -Dm644 "$startdir/sourceroll.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/sourceroll.svg"
   install -Dm644 "$startdir/sourceroll.desktop" "$pkgdir/usr/share/applications/sourceroll.desktop"
   install -Dm644 README.md "$pkgdir/usr/share/doc/sourceroll/README.md"
