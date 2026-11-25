@@ -50,6 +50,7 @@ public:
     static QStringList ffmpegArguments(const QJsonObject &settings, const QString &output, bool recording);
     static bool validSettings(const QJsonObject &settings, QString *error);
     static QString socketPath();
+    static bool omaControlOpen(const QByteArray &layers);
     static std::optional<double> parsePeak(const QByteArray &line);
     static bool importLegacySettings(const QString &legacy, const QString &target, QString *error = nullptr);
     Q_INVOKABLE void refreshDevices();
@@ -81,7 +82,10 @@ private:
     void startScreenPreview(bool choose);
     bool saveSettings();
     void fail(const QString &message);
-    QProcess m_process;
+    QProcess m_process, m_displayQuery;
+    QTimer m_displayPoll;
+    bool m_displaySettingsOpen = false;
+    QString m_lastNotice;
     ScreenMonitor m_screenMonitor;
     QProcess m_screenPreviewProcess;
     QTemporaryDir m_portalCache;

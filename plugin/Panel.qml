@@ -124,6 +124,12 @@ Ui.Panel {
                     color: Commons.Color.urgent; font.family: Style.font.family; font.pixelSize: Style.font.body
                 }
                 Text {
+                    Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
+                    text: [root.status.warning || "", root.status.displayWarning || ""].filter(function(s) { return s !== "" }).join("\n")
+                    visible: text !== ""; color: Commons.Color.accent
+                    font.family: Style.font.family; font.pixelSize: Style.font.body
+                }
+                Text {
                     Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideMiddle
                     visible: root.status.output !== ""; text: root.status.output
                     color: Commons.Color.foreground; opacity: 0.6; font.family: Style.font.family; font.pixelSize: Style.font.body - 2

@@ -35,6 +35,9 @@ assert(parsePreview('{"event":"preview","source":"screen","jpeg":"/9j/2Q=="}', '
 assert(parsePreview('{"event":"preview","source":"<img>","jpeg":"/9j/2Q=="}', 'screen') === null)
 assert(parseStatus('{"recording":true,"state":"recording","sources":[{"id":"screen","state":"recording"}]}').screenRecording)
 assert(!parseStatus('{"recording":true,"state":"validating","sources":[{"id":"screen","state":"recording"}]}').screenRecording)
+assert(parseStatus('{"recording":true,"state":"recording","screenHealth":"recovering","sources":[{"id":"screen","state":"recording"}]}').screenRecording === false)
+assert(parseStatus('{"recording":true,"state":"recording","screenHealth":"live","sources":[{"id":"screen-002","state":"recording"}]}').screenRecording)
+assert(parseStatus('{"recording":true,"displayWarning":"OmaControl is open"}').displayWarning === 'OmaControl is open')
 console.log('Plugin parsing and rich-text boundary tests passed.')
 '''
 with tempfile.NamedTemporaryFile(suffix='.js', mode='w') as f:

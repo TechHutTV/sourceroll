@@ -35,13 +35,15 @@ ApplicationWindow {
     function sourceRecording(id) {
         if (state.state !== "recording" && state.state !== "starting") return false
         const sources = state.sources || []
-        return sources.some(function(source) { return source.id === id && source.state === "recording" })
+        if (id === "screen" && (state.screenHealth === "recovering" || state.screenHealth === "failed" || state.screenHealth === "starting")) return false
+        return sources.some(function(source) { return (source.id === id || (id === "screen" && source.id.indexOf("screen-") === 0)) && source.state === "recording" })
     }
     function stateLabel() {
         if (state.screenSelecting) return qsTr("Choose a screen or window…")
         if (state.state === "waiting-screen") return qsTr("Choose a screen or window…")
         if (state.state === "validating") return qsTr("Checking saved files…")
-        if (state.state === "saved") return qsTr("Session saved")
+        if (state.state === "saved") return state.session && state.session.hasScreenGaps ? qsTr("Saved with screen interruptions") : qsTr("Session saved")
+        if (state.screenHealth === "recovering" || (state.screenRecoveryAttempts > 0 && state.screenHealth === "starting")) return qsTr("Reconnecting screen…")
         if (state.state === "starting") return qsTr("Starting…")
         if (state.state === "recording") return qsTr("Recording")
         if (state.state === "stopping") return qsTr("Saving…")
@@ -368,7 +370,8 @@ ApplicationWindow {
                 color: Qt.tint(theme.colors.background, Qt.alpha(theme.colors.urgent, 0.12)); radius: theme.radius
                 PlainLabel { id: errorText; anchors.fill: parent; anchors.margins: 10; text: win.state.error || ""; wrapMode: Text.Wrap; maximumLineCount: 4; elide: Text.ElideRight; color: theme.colors.urgent }
             }
-            Caption { text: win.state.warning || ""; visible: text !== ""; wrapMode: Text.Wrap; Layout.fillWidth: true; color: theme.accent }
+            Caption { objectName: "displayWarning"; text: win.state.displayWarning || ""; visible: text !== ""; wrapMode: Text.Wrap; Layout.fillWidth: true; color: theme.accent }
+            Caption { objectName: "captureWarning"; text: win.state.warning || ""; visible: text !== ""; wrapMode: Text.Wrap; Layout.fillWidth: true; color: theme.accent }
             Caption {
                 Layout.fillWidth: true; visible: win.busy
                 text: (win.state.sources || []).map(function(s) { return s.id + ": " + s.state }).join("    ")
