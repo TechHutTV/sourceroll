@@ -1,5 +1,5 @@
 {
-  "Sourceroll": "Sourceroll",
+  "Source Roll": "Source Roll",
   "Recording": "Optager",
   "Starting…": "Starter…",
   "Saving…": "Gemmer…",
@@ -38,7 +38,7 @@
   "Keyboard shortcuts": "Tastaturgenveje",
   "Space — Start / stop recording\nEsc — Hide window, keep recording\nQ — Quit (confirm first)\n? — Show shortcuts\n\nBar: click to open controls, middle-click to record / stop.": "Mellemrum — Start / stop optagelse\nEsc — Skjul vinduet, fortsæt optagelse\nQ — Afslut (bekræft først)\n? — Vis genveje\n\nBjælke: klik åbner styring, midterklik optager / stopper.",
   "Stop recording and quit?": "Stop optagelsen og afslut?",
-  "Quit Sourceroll?": "Afslut Sourceroll?",
+  "Quit Source Roll?": "Afslut Source Roll?",
   "The current clip will be saved before quitting.": "Det aktuelle klip gemmes før afslutning.",
   "The bar can start the recorder again.": "Bjælken kan starte optageren igen.",
   "Screen": "Skærm",

@@ -2,9 +2,9 @@
 
 ## Record a take
 
-Search **Sourceroll** in the app launcher (Super + Space). Enable the sources you need and select their devices. Enabling the Screen source opens the native Wayland screen/window chooser and starts a live preview before recording. Click an empty Screen preview pane to choose a source directly, including in Both view. Use **Choose screen/window** to change an existing selection. Recording asks the portal to restore that selection; the portal can request approval again if restoration is unavailable or permission has changed. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
+Search **Source Roll** in the app launcher (Super + Space). Enable the sources you need and select their devices. Enabling the Screen source opens the native Wayland screen/window chooser and starts a live preview before recording. Click an empty Screen preview pane to choose a source directly, including in Both view. Use **Choose screen/window** to change an existing selection. Recording asks the portal to restore that selection; the portal can request approval again if restoration is unavailable or permission has changed. Direct monitor capture is also available, but depends on GPU and display wiring. Use the chooser if a monitor cannot be captured directly.
 
-The system chooser still uses snapshots. Sourceroll leaves the shared picker unchanged and shows a live screen preview after you approve a source. Choosing or previewing a screen does not save a recording.
+The system chooser still uses snapshots. Source Roll leaves the shared picker unchanged and shows a live screen preview after you approve a source. Choosing or previewing a screen does not save a recording.
 
 The app shows preparation, screen-selection, recording, stopping, and file-validation states. A take is reported as saved only after its files pass validation. Settings are locked during capture and finalization. Turning a source off excludes it from the take; it does not mute or modify the system device.
 
@@ -26,7 +26,7 @@ Original camera mode preserves supported MJPEG/H.264 streams without re-encoding
 
 ## Timing and editing
 
-Source preparation and permission selection take different amounts of time. Sourceroll records the camera and audio device timestamps and the screen recorder's first-frame timestamp, maps them to a common monotonic clock, and saves each source's start offset in `session.json`. Files use local media timestamps, and `timeline.otio` places validated clips on separate tracks with the measured offsets.
+Source preparation and permission selection take different amounts of time. Source Roll records the camera and audio device timestamps and the screen recorder's first-frame timestamp, maps them to a common monotonic clock, and saves each source's start offset in `session.json`. Files use local media timestamps, and `timeline.otio` places validated clips on separate tracks with the measured offsets.
 
 OpenTimelineIO support varies by editor. The JSON manifest remains available for editors or scripts that do not import OTIO. These offsets describe capture timing; camera processing and microphone DSP can introduce physical latency that needs calibration or adjustment in an editor. Use a visible/audible synchronization cue when frame-accurate alignment matters.
 
@@ -49,13 +49,13 @@ The app follows Omarchy's palette and control tokens live, including light/dark 
 
 ## Failure handling and recovery
 
-Screen capture has a separate recovery path. For portal capture, Sourceroll runs `pw-dump` to watch only PipeWire clients/nodes/links belonging to its recorder process. A link/node error (including buffer negotiation failures), a lost connection, a recorder exit after startup, or ten seconds without either file growth or encoded output triggers recovery. Image similarity is never used: an unchanged desktop alone does not trigger a restart. A pipeline that keeps writing duplicate frames while reporting a healthy connection cannot be distinguished from a still desktop by these checks.
+Screen capture has a separate recovery path. For portal capture, Source Roll runs `pw-dump` to watch only PipeWire clients/nodes/links belonging to its recorder process. A link/node error (including buffer negotiation failures), a lost connection, a recorder exit after startup, or ten seconds without either file growth or encoded output triggers recovery. Image similarity is never used: an unchanged desktop alone does not trigger a restart. A pipeline that keeps writing duplicate frames while reporting a healthy connection cannot be distinguished from a still desktop by these checks.
 
 Recovery finalizes the affected screen file and reconnects into `screen-002.mkv`, then `screen-003.mkv` and `screen-004.mkv` if necessary. Camera and audio keep running. There are at most three retries per take, with a twenty-second first-frame deadline per replacement. Portal restoration may require permission again. Stop cancels any pending retry; exhausting retries stops and preserves the whole take with an error. Failed segments retain their partial files.
 
 The app, bar popup, and desktop notifications report interruptions and recovery with a recording-relative `HH:MM:SS.mmm` timecode, for example `00:11:29.123`. Recovery notices retain that timecode, and the final saved warning lists every interruption time. These mark detection; inspect a few seconds before each marker too, because detection can follow the first missed frame. `session.json` retains `screenInterruptions` with monotonic failure/resumption timestamps, `recordingOffsetSeconds`, `recordingTimecode`, UTC `detectedAtUtc`, and `hasScreenGaps` on the session; the timeline puts validated screen segments on one track with measured gaps. Gaps represent missing footage, not footage recovered afterward. Check interrupted segments for a frozen tail before editing. Validation checks readability, not visual freshness. Saved takes with interruptions retain a warning.
 
-Opening OmaControl during screen recording shows a warning in the app and bar popup and sends a desktop notification, even when Sourceroll is hidden. This checks OmaControl's layer surface, so it covers the whole settings window, not just its Displays tab. Sourceroll does not change OmaControl or prevent display changes. If PipeWire monitoring is unavailable or the recorder cannot be identified, a warning explicitly reports the reduced coverage. Direct-monitor capture retains the process/file-progress checks but has no PipeWire connection monitoring.
+Opening OmaControl during screen recording shows a warning in the app and bar popup and sends a desktop notification, even when Source Roll is hidden. This checks OmaControl's layer surface, so it covers the whole settings window, not just its Displays tab. Source Roll does not change OmaControl or prevent display changes. If PipeWire monitoring is unavailable or the recorder cannot be identified, a warning explicitly reports the reduced coverage. Direct-monitor capture retains the process/file-progress checks but has no PipeWire connection monitoring.
 
 If an audio source exits or the camera stops delivering frames, all sources are asked to stop. Low disk space also stops the take. Workers are tracked individually; unrelated recorder processes are never killed. Partial files and metadata are preserved when a source fails. Source files are validated with ffprobe before being renamed, and the take reports incomplete if validation fails.
 
@@ -74,7 +74,7 @@ bin/install
 
 `bin/install` builds an Arch package and installs the user widget. Password entry uses the native terminal prompt. Plugin installation backs up previous files and bar configuration, then restarts the shell to clear cached QML. The recorder runs separately, so a shell restart keeps active takes recording. No files under `/usr/share/omarchy` are edited.
 
-Settings are saved atomically in `~/.config/sourceroll/settings.json`. New installations default to `~/Videos/Sourceroll`. Existing Source Record settings are imported once when no Sourceroll settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
+Settings are saved atomically in `~/.config/sourceroll/settings.json`. New installations default to `~/Videos/Sourceroll`. Existing Source Record settings are imported once when no Source Roll settings exist; their chosen recording folder is preserved. Widget migration retains bar placement and backs up the previous widget. Existing recordings are not moved or deleted.
 
 There is one resident app per user, protected by a lock and a user-only local socket. The widget starts it in the background as needed. There is no network service, account, telemetry, or automatic recording at login.
 

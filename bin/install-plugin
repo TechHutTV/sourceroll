@@ -70,4 +70,4 @@ if not placed:
     command += ['--section', 'right', '--before', 'omarchy.tray']
 subprocess.run(command, check=True)
 subprocess.run(['omarchy', 'restart', 'shell'], check=True)
-print('Sourceroll widget installed. Previous widget and bar settings backed up in', backup)
+print('Source Roll widget installed. Previous widget and bar settings backed up in', backup)

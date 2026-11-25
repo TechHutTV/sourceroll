@@ -1,10 +1,10 @@
-# Sourceroll
+# Source Roll
 
 Record your screen, camera, microphone, and desktop audio into separate files, ready to edit.
 
-Sourceroll is a recording app for Omarchy, built for people who put their videos together in post. Pick your sources, check the previews and audio levels, and start a take. You can crop the camera, rearrange the screen footage, and mix the audio later in your editor.
+Source Roll is a recording app for Omarchy, built for people who put their videos together in post. Pick your sources, check the previews and audio levels, and start a take. You can crop the camera, rearrange the screen footage, and mix the audio later in your editor.
 
-![Screen and camera previews in Sourceroll](docs/screenshot.png)
+![Screen and camera previews in Source Roll](docs/screenshot.png)
 
 ## What it does
 
@@ -20,7 +20,7 @@ This is an early project. Multiple cameras, streaming, scene compositing, and he
 
 ## Install
 
-Sourceroll currently builds from source on Arch Linux with Omarchy. You'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-sharing portal.
+Source Roll currently builds from source on Arch Linux with Omarchy. You'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-sharing portal.
 
 ```sh
 git clone https://github.com/TechHutTV/sourceroll.git
@@ -28,11 +28,11 @@ cd sourceroll
 bin/install
 ```
 
-The installer builds an Arch package, adds Sourceroll to your app launcher, and installs the bar widget. It prompts for sudo when installing the package and restarts the Omarchy shell after updating the widget.
+The installer builds an Arch package, adds Source Roll to your app launcher, and installs the bar widget. It prompts for sudo when installing the package and restarts the Omarchy shell after updating the widget.
 
 ## Record a take
 
-1. Open Sourceroll from the app launcher.
+1. Open Source Roll from the app launcher.
 2. Enable your sources and choose the camera and audio devices.
 3. Enable Screen to pick a display or window. You can also click an empty screen preview to open the picker.
 4. Check your framing and audio levels, then click Record or press Space.

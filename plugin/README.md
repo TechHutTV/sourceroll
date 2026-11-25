@@ -1,13 +1,13 @@
-# Sourceroll bar widget
+# Source Roll bar widget
 
-An Omarchy `bar-widget` for the separately installed Sourceroll desktop recorder.
+An Omarchy `bar-widget` for the separately installed Source Roll desktop recorder.
 `BarWidget.qml` owns the bar button and IPC clients; `Panel.qml` uses Omarchy's
 `Panel`, `KeyboardPanel`, and `PanelKeyCatcher` for the popup lifecycle.
 The popup is part of the bar widget, so it does not declare a separate panel kind.
 
 ## Install and use
 
-Install the Sourceroll Arch package first, then run `bin/install-plugin` from the
+Install the Source Roll Arch package first, then run `bin/install-plugin` from the
 application repository. The installer validates this folder, backs up existing
 widget files and bar configuration, preserves placement during the Source Record
 rename, enables `local.sourceroll`, and restarts the existing Omarchy shell.
@@ -25,12 +25,12 @@ omarchy bar move local.sourceroll --section right
 
 ## Dependencies and permissions
 
-Requires Omarchy/Quattro and `sourceroll` on PATH. Sourceroll requires Qt 6,
+Requires Omarchy/Quattro and `sourceroll` on PATH. Source Roll requires Qt 6,
 FFmpeg/ffprobe, PulseAudio-compatible audio (including PipeWire-Pulse), GPU Screen
 Recorder, and the Wayland desktop portal. The native portal handles screen/window
 sharing permission; this plugin does not replace its picker.
 
-The widget uses argument-array CLI calls and the user-only local Sourceroll socket.
+The widget uses argument-array CLI calls and the user-only local Source Roll socket.
 It polls recording status, subscribes to audio peaks, and subscribes to screen and camera
 frames only while the popup is open. Preview and recording share the camera. Screen monitoring decodes a disposable copy of the recorded stream. Idle screen selection previews the approved source without saving video; the portal may restore the selection for recording.
 Opening the popup starts idle monitoring; recording starts only on an explicit

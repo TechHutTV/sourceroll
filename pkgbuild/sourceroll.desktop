@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Sourceroll
-Name[da]=Sourceroll
+Name=Source Roll
+Name[da]=Source Roll
 Comment=Record screen, camera and audio as separate takes
 Comment[da]=Optag skærm, kamera og lyd som separate filer
 Exec=sourceroll open

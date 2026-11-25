@@ -58,7 +58,7 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Sourceroll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nsourceroll configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Source Roll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover|choose-screen [--json]\nsourceroll configure --camera PATH --mode MODE --audio SOURCE --directory PATH --encoding original|h264 [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
@@ -121,10 +121,10 @@ static int cli(const QStringList &args) {
         const QString stateDir = QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + "/sourceroll";
         QDir().mkpath(stateDir);
         resident.setStandardErrorFile(stateDir + "/app.log", QIODevice::Append);
-        if (!resident.startDetached()) { fputs("Could not start Sourceroll.\n", stderr); return 1; }
+        if (!resident.startDetached()) { fputs("Could not start Source Roll.\n", stderr); return 1; }
         for (int i = 0; i < 60 && response.isEmpty(); ++i) { QThread::msleep(100); response = send(request); }
     }
-    if (response.isEmpty()) { fputs("Could not reach Sourceroll.\n", stderr); return 1; }
+    if (response.isEmpty()) { fputs("Could not reach Source Roll.\n", stderr); return 1; }
     puts(QJsonDocument(response).toJson(QJsonDocument::Compact).constData());
     if (!response["ok"].toBool()) { fputs(qPrintable(response["error"].toString() + '\n'), stderr); return 1; }
     return 0;

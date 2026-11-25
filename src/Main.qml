@@ -8,7 +8,7 @@ ApplicationWindow {
     width: 1120; height: 850
     minimumWidth: 980; minimumHeight: 760
     visible: initialVisible
-    title: qsTr("Sourceroll")
+    title: qsTr("Source Roll")
     color: theme.colors.background
     Material.theme: theme.dark ? Material.Dark : Material.Light
     Material.accent: theme.accent
@@ -188,7 +188,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 ColumnLayout {
                     spacing: 3
-                    PlainLabel { text: qsTr("Sourceroll"); font.pixelSize: theme.style.fontSize + 7; font.weight: Font.DemiBold }
+                    PlainLabel { text: qsTr("Source Roll"); font.pixelSize: theme.style.fontSize + 7; font.weight: Font.DemiBold }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle { width: 8; height: 8; radius: 4; color: win.state.recording ? theme.colors.urgent : theme.accent }
@@ -410,7 +410,7 @@ ApplicationWindow {
     }
     Dialog {
         id: quitDialog; anchors.centerIn: parent; modal: true; width: 420
-        title: win.state.recording ? qsTr("Stop recording and quit?") : qsTr("Quit Sourceroll?")
+        title: win.state.recording ? qsTr("Stop recording and quit?") : qsTr("Quit Source Roll?")
         standardButtons: Dialog.Yes | Dialog.No
         onAccepted: { win.allowQuit = true; backend.shutdown(); Qt.quit() }
         contentItem: PlainLabel { text: win.state.recording ? qsTr("The current clip will be saved before quitting.") : qsTr("The bar can start the recorder again."); padding: 14 }
