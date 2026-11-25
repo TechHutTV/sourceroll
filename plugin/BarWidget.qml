@@ -130,7 +130,7 @@ Ui.BarWidget {
         active: root.status.recording
         slotSize: root.status.recording && !root.vertical ? Style.space(98) : Style.bar.iconSlot
         labelText: root.status.recording && !root.vertical ? Model.duration(root.status.elapsed) : ""
-        tooltipText: strings.t("bar.tooltip")
+        tooltipText: Model.safeText([strings.t("bar.tooltip"), root.status.warning || "", root.status.displayWarning || ""].filter(function(s) { return s !== "" }).join("\n"))
         onPressed: function(b) {
             if (b === Qt.MiddleButton) root.action("toggle")
             else if (b === Qt.RightButton) root.action("open")

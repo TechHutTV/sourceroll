@@ -49,13 +49,21 @@ The app follows Omarchy's palette and control tokens live, including light/dark 
 
 ## Failure handling and recovery
 
-If an enabled source exits or the camera stops delivering frames, all sources are asked to stop. Low disk space also stops the take. Workers are tracked individually; unrelated recorder processes are never killed. Partial files and metadata are preserved when a source fails. Source files are validated with ffprobe before being renamed, and the take reports incomplete if validation fails.
+Screen capture has a separate recovery path. For portal capture, Sourceroll runs `pw-dump` to watch only PipeWire clients/nodes/links belonging to its recorder process. A link/node error (including buffer negotiation failures), a lost connection, a recorder exit after startup, or ten seconds without either file growth or encoded output triggers recovery. Image similarity is never used: an unchanged desktop alone does not trigger a restart. A pipeline that keeps writing duplicate frames while reporting a healthy connection cannot be distinguished from a still desktop by these checks.
+
+Recovery finalizes the affected screen file and reconnects into `screen-002.mkv`, then `screen-003.mkv` and `screen-004.mkv` if necessary. Camera and audio keep running. There are at most three retries per take, with a twenty-second first-frame deadline per replacement. Portal restoration may require permission again. Stop cancels any pending retry; exhausting retries stops and preserves the whole take with an error. Failed segments retain their partial files.
+
+The app, bar popup, and desktop notifications report interruptions and recovery with a recording-relative `HH:MM:SS.mmm` timecode, for example `00:11:29.123`. Recovery notices retain that timecode, and the final saved warning lists every interruption time. These mark detection; inspect a few seconds before each marker too, because detection can follow the first missed frame. `session.json` retains `screenInterruptions` with monotonic failure/resumption timestamps, `recordingOffsetSeconds`, `recordingTimecode`, UTC `detectedAtUtc`, and `hasScreenGaps` on the session; the timeline puts validated screen segments on one track with measured gaps. Gaps represent missing footage, not footage recovered afterward. Check interrupted segments for a frozen tail before editing. Validation checks readability, not visual freshness. Saved takes with interruptions retain a warning.
+
+Opening OmaControl during screen recording shows a warning in the app and bar popup and sends a desktop notification, even when Sourceroll is hidden. This checks OmaControl's layer surface, so it covers the whole settings window, not just its Displays tab. Sourceroll does not change OmaControl or prevent display changes. If PipeWire monitoring is unavailable or the recorder cannot be identified, a warning explicitly reports the reduced coverage. Direct-monitor capture retains the process/file-progress checks but has no PipeWire connection monitoring.
+
+If an audio source exits or the camera stops delivering frames, all sources are asked to stop. Low disk space also stops the take. Workers are tracked individually; unrelated recorder processes are never killed. Partial files and metadata are preserved when a source fails. Source files are validated with ffprobe before being renamed, and the take reports incomplete if validation fails.
 
 After an interrupted run, choose **Recover interrupted take** in the app or run `sourceroll recover --json`. Recovery checks the most recent incomplete take in the configured output folder, preserves unreadable partial files, and rebuilds timing/timeline data when enough metadata exists. It never overwrites a final file. A normal quit waits for capture finalization; after a crash, parent-death signals ask workers to finalize and recovery handles the remaining metadata.
 
 ## Build and install
 
-Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, Python 3, FFmpeg/ffprobe, pactl, GPU Screen Recorder, and a working Wayland screen-cast portal.
+Requires Arch/Omarchy, Qt 6 base/declarative/Wayland/SVG, qmake6, make, a C++ compiler, Python 3, FFmpeg/ffprobe, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-cast portal.
 
 ```sh
 bin/build

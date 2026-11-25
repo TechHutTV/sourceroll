@@ -11,6 +11,7 @@ Sourceroll is a recording app for Omarchy, built for people who put their videos
 - Records one screen or window, one camera, a microphone, and desktop audio. Enable only the sources you need.
 - Saves screen video at its native resolution, with 30 or 60 fps and three quality presets.
 - Keeps supported camera streams in their original format, or encodes them as H.264.
+- Reconnects interrupted screen capture into separate segments while camera and audio continue, and warns when OmaControl is open during recording.
 - Shows live screen and camera previews, audio meters, and recording controls in the app and Omarchy bar.
 - Saves timing offsets and an OpenTimelineIO timeline to help align the files in an editor.
 - Follows your Omarchy theme as it changes.
@@ -19,7 +20,7 @@ This is an early project. Multiple cameras, streaming, scene compositing, and he
 
 ## Install
 
-Sourceroll currently builds from source on Arch Linux with Omarchy. You'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, and a working Wayland screen-sharing portal.
+Sourceroll currently builds from source on Arch Linux with Omarchy. You'll need a C++ compiler, make, Qt 6 with qmake6, Python 3, FFmpeg, pactl, GPU Screen Recorder, PipeWire (`pw-dump`), and a working Wayland screen-sharing portal.
 
 ```sh
 git clone https://github.com/TechHutTV/sourceroll.git

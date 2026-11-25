@@ -23,13 +23,20 @@ static bool selected(const QJsonObject &s, const QString &id) { return s.value(i
 static QJsonObject rational(double value, double rate = 60) { return {{"OTIO_SCHEMA", "RationalTime.1"}, {"value", value * rate}, {"rate", rate}}; }
 static QJsonObject range(double start, double duration) { return {{"OTIO_SCHEMA", "TimeRange.1"}, {"start_time", rational(start)}, {"duration", rational(duration)}}; }
 
-QString SessionRecorder::screenOutput() {
+QString SessionRecorder::screenOutput(const QString &file) {
     // The file branch remains primary. The FIFO preview branch may drop packets
     // or fail independently, so a slow viewer cannot stall the saved recording.
-    return "[f=matroska]screen.partial.mkv|[f=mpegts:onfail=ignore:use_fifo=1:fifo_options=drop_pkts_on_overflow=1]pipe:1";
+    return "[f=matroska]" + file + "|[f=mpegts:onfail=ignore:use_fifo=1:fifo_options=drop_pkts_on_overflow=1]pipe:1";
 }
 
 qint64 SessionRecorder::monotonicUs() { timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000; }
+
+QString SessionRecorder::recordingTimecode(double seconds) {
+    const qint64 ms = qMax<qint64>(0, qRound64(seconds * 1000));
+    return QString("%1:%2:%3.%4").arg(ms / 3600000, 2, 10, QChar('0'))
+        .arg((ms / 60000) % 60, 2, 10, QChar('0')).arg((ms / 1000) % 60, 2, 10, QChar('0'))
+        .arg(ms % 1000, 3, 10, QChar('0'));
+}
 
 qint64 SessionRecorder::packetTimestamp(const QByteArray &line) {
     // Read the device's original absolute timestamp, before FFmpeg normalizes the file to zero.
@@ -75,11 +82,29 @@ QStringList SessionRecorder::audioArguments(const QString &source, const QString
     return args;
 }
 
-SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, const QString &audioProgram)
-    : QObject(parent), m_screenProgram(screenProgram), m_audioProgram(audioProgram) {
+SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, const QString &audioProgram, const QString &healthProgram)
+    : QObject(parent), m_screenProgram(screenProgram), m_audioProgram(audioProgram), m_captureHealth(nullptr, healthProgram) {
     auto child = [](QProcess &p) { p.setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGINT); if (getppid() == 1) _exit(1); }); };
     child(m_screen); child(m_probe);
-    connect(&m_screen, &QProcess::readyReadStandardOutput, this, [this] { emit screenData(m_screen.readAllStandardOutput()); });
+    connect(&m_screen, &QProcess::started, this, [this] {
+        if (m_stopping || m_screenRecovering) {
+            if (m_screen.processId() > 0) ::kill(m_screen.processId(), SIGINT);
+            return;
+        }
+        if (m_settings["screenTarget"] == "portal") m_captureHealth.start(m_screen.processId());
+    });
+    connect(&m_captureHealth, &CaptureHealth::failed, this, &SessionRecorder::screenFailure);
+    connect(&m_captureHealth, &CaptureHealth::unavailable, this, [this] {
+        if (!m_busy || m_stopping || m_screenRecovering) return;
+        m_screenHealth = "unavailable";
+        m_monitorWarning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording.");
+        save(); emit changed();
+    });
+    connect(&m_screen, &QProcess::readyReadStandardOutput, this, [this] {
+        const auto bytes = m_screen.readAllStandardOutput();
+        if (!bytes.isEmpty()) m_screenBytesUs = monotonicUs();
+        emit screenData(bytes);
+    });
     for (int i = 0; i < 2; ++i) {
         child(m_audio[i]);
         connect(&m_audio[i], &QProcess::readyReadStandardError, this, [this, i] { readAudio(i); });
@@ -111,14 +136,20 @@ SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, 
 
 SessionRecorder::~SessionRecorder() { shutdown(); }
 
+QString SessionRecorder::warning() const {
+    QStringList parts;
+    for (const auto &part : {m_interruptionWarning, m_monitorWarning, m_timingWarning, m_warning}) if (!part.isEmpty()) parts << part;
+    return parts.join(' ');
+}
+
 QJsonObject SessionRecorder::source(const QString &id) const {
-    for (const auto &v : m_manifest["sources"].toArray()) if (v.toObject()["id"] == id) return v.toObject();
+    for (const auto &v : m_manifest["sources"].toArray()) if (v.toObject()["id"] == (id == "screen" ? m_screenId : id)) return v.toObject();
     return {};
 }
 
 void SessionRecorder::updateSource(const QString &id, const QJsonObject &value) {
     auto sources = m_manifest["sources"].toArray();
-    for (int i = 0; i < sources.size(); ++i) if (sources[i].toObject()["id"] == id) { sources[i] = value; break; }
+    for (int i = 0; i < sources.size(); ++i) if (sources[i].toObject()["id"] == (id == "screen" ? m_screenId : id)) { sources[i] = value; break; }
     m_manifest["sources"] = sources;
 }
 
@@ -135,9 +166,9 @@ QVariantMap SessionRecorder::status() const {
         if (stamp && (!first || stamp < first)) first = stamp;
     }
     const auto end = m_busy ? monotonicUs() : qint64(m_manifest["stoppedMonotonicUs"].toDouble(first));
-    return {{"state", m_state}, {"recording", m_busy}, {"error", m_error}, {"warning", m_warning},
+    return {{"state", m_state}, {"recording", m_busy}, {"error", m_error}, {"warning", warning()},
         {"output", m_directory}, {"elapsedSeconds", first ? qMax(0.0, (end - first) / 1000000.0) : 0},
-        {"bytes", double(size)}, {"sources", m_manifest["sources"].toArray().toVariantList()}, {"session", m_manifest.toVariantMap()}};
+        {"screenHealth", m_screenHealth}, {"screenRecoveryAttempts", m_screenRetries}, {"bytes", double(size)}, {"sources", m_manifest["sources"].toArray().toVariantList()}, {"session", m_manifest.toVariantMap()}};
 }
 
 void SessionRecorder::stopPreview() {
@@ -171,7 +202,9 @@ bool SessionRecorder::start(const QJsonObject &settings, const QString &portalTo
     if (!QDir::isAbsolutePath(root) || !QDir().mkpath(root) || QStorageInfo(root).bytesAvailable() < 512LL * 1024 * 1024) {
         m_error = tr("Choose a writable output folder with at least 512 MiB free."); m_state = "error"; emit changed(); return false;
     }
-    stopPreview(); m_settings = settings; m_error.clear(); m_warning.clear(); m_stopping = false; m_sourcesLaunched = false;
+    m_captureHealth.stop(); m_screenId = "screen"; m_screenRecovering = false; m_screenRetries = 0;
+    m_screenHealth = selected(settings, "screen") ? "starting" : "inactive"; m_portalTokenPath = portalTokenPath;
+    stopPreview(); m_settings = settings; m_error.clear(); m_warning.clear(); m_monitorWarning.clear(); m_interruptionWarning.clear(); m_timingWarning.clear(); m_stopping = false; m_sourcesLaunched = false;
     m_epochMono = monotonicUs(); m_epochReal = QDateTime::currentMSecsSinceEpoch() * 1000;
     m_started = m_epochMono;
     const QString name = "take-" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
@@ -188,18 +221,49 @@ bool SessionRecorder::start(const QJsonObject &settings, const QString &portalTo
         {"startedUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}, {"epochRealtimeUs", double(m_epochReal)},
         {"epochMonotonicUs", double(m_epochMono)}, {"sources", sources}, {"settings", settings}};
     m_busy = true; m_state = selected(settings, "screen") && settings["screenTarget"] == "portal" ? "waiting-screen" : "starting"; save();
-    if (selected(settings, "screen")) {
-        m_screenLog.clear();
-        m_screen.setWorkingDirectory(m_directory);
-        QStringList args{"-w", settings["screenTarget"].toString(), "-f", QString::number(settings["screenFps"].toInt(60)),
-            "-fm", "cfr", "-k", "h264", "-q", settings["screenQuality"].toString("very_high"), "-fallback-cpu-encoding", "yes", "-write-first-frame-ts", "yes",
-            "-keyint", "1", "-c", "tee", "-o", screenOutput()};
-        if (!portalTokenPath.isEmpty() && settings["screenTarget"] == "portal")
-            args << "-restore-portal-session" << "yes" << "-portal-session-token-filepath" << portalTokenPath;
-        emit screenStarting();
-        m_screen.start(m_screenProgram, args);
-    } else launchSources();
+    if (selected(settings, "screen")) launchScreen(); else launchSources();
     emit changed(); return true;
+}
+
+void SessionRecorder::launchScreen() {
+    m_screenRecovering = false; m_screenLog.clear(); m_screenHealth = "starting";
+    m_screenLaunchUs = m_screenProgressUs = m_screenBytesUs = monotonicUs(); m_screenSize = 0;
+    m_screen.setWorkingDirectory(m_directory);
+    QStringList args{"-w", m_settings["screenTarget"].toString(), "-f", QString::number(m_settings["screenFps"].toInt(60)),
+        "-fm", "cfr", "-k", "h264", "-q", m_settings["screenQuality"].toString("very_high"), "-fallback-cpu-encoding", "yes", "-write-first-frame-ts", "yes",
+        "-keyint", "1", "-c", "tee", "-o", screenOutput(source("screen")["file"].toString())};
+    if (!m_portalTokenPath.isEmpty() && m_settings["screenTarget"] == "portal")
+        args << "-restore-portal-session" << "yes" << "-portal-session-token-filepath" << m_portalTokenPath;
+    emit screenStarting(); m_screen.start(m_screenProgram, args);
+}
+
+void SessionRecorder::screenFailure(const QString &reason) {
+    if (!m_busy || m_stopping || m_screenRecovering) return;
+    m_captureHealth.stop();
+    const auto detectedUs = monotonicUs();
+    qint64 firstUs = 0;
+    for (const auto &value : m_manifest["sources"].toArray()) {
+        const auto stamp = qint64(value.toObject()["firstMonotonicUs"].toDouble());
+        if (stamp && (!firstUs || stamp < firstUs)) firstUs = stamp;
+    }
+    const double offset = qMax(0.0, (detectedUs - (firstUs ? firstUs : m_epochMono)) / 1000000.0);
+    const QString timecode = recordingTimecode(offset);
+    auto events = m_manifest["screenInterruptions"].toArray();
+    events.append(QJsonObject{{"monotonicUs", double(detectedUs)}, {"source", m_screenId}, {"reason", reason},
+        {"recordingOffsetSeconds", offset}, {"recordingTimecode", timecode},
+        {"detectedAtUtc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}});
+    m_manifest["screenInterruptions"] = events;
+    auto segment = source("screen"); segment["interrupted"] = true; segment["state"] = "interrupted";
+    segment["interruptedMonotonicUs"] = double(detectedUs); updateSource("screen", segment);
+    if (m_screenRetries >= 3) {
+        m_screenHealth = "failed";
+        stop(tr("Screen capture could not recover at %1 after three retries. Existing files have been kept. %2").arg(timecode, reason)); return;
+    }
+    ++m_screenRetries; m_screenRecovering = true; m_screenHealth = "recovering";
+    m_interruptionWarning = tr("Screen capture interrupted at %1. Reconnecting (attempt %2 of 3); camera and audio continue. There will be a gap in the screen track.").arg(timecode).arg(m_screenRetries);
+    m_retryUs = monotonicUs();
+    if (m_screen.processId() > 0) ::kill(m_screen.processId(), SIGINT);
+    save(); emit changed();
 }
 
 void SessionRecorder::launchSources() {
@@ -234,7 +298,7 @@ void SessionRecorder::timestamp(const QString &id, qint64 monoUs, qint64 realUs)
     auto s = source(id); if (s.isEmpty() || s.contains("firstMonotonicUs")) return;
     s["firstMonotonicUs"] = double(monoUs); s["firstRealtimeUs"] = double(realUs); s["state"] = "recording"; updateSource(id, s); save();
     bool ready = true;
-    for (const auto &value : m_manifest["sources"].toArray()) if (!value.toObject().contains("firstMonotonicUs")) ready = false;
+    for (const auto &value : m_manifest["sources"].toArray()) if ((value.toObject()["id"] == m_screenId || !value.toObject()["id"].toString().startsWith("screen")) && !value.toObject().contains("firstMonotonicUs")) ready = false;
     if (ready) { m_state = "recording"; m_manifest["state"] = "recording"; save(); }
     emit changed();
 }
@@ -247,7 +311,7 @@ void SessionRecorder::cameraFinished(int code, const QString &error) {
 
 void SessionRecorder::workerFinished(int index, int code) {
     if (m_shutdown) return;
-    if (index == 2) { emit screenData(m_screen.readAllStandardOutput()); emit screenStopped(); }
+    if (index == 2) { m_captureHealth.stop(); emit screenData(m_screen.readAllStandardOutput()); emit screenStopped(); }
     if (index == 2) {
         for (const auto &line : m_screen.readAllStandardError().split('\n'))
             if (!line.contains("token") && (line.contains("error") || line.contains("failed") || line.contains("denied") || line.contains("Error"))) m_screenLog = (m_screenLog + line + '\n').right(8000);
@@ -258,9 +322,11 @@ void SessionRecorder::workerFinished(int index, int code) {
         if (m_preview && code) { m_warning = tr("%1 preview failed. Check its selected device.").arg(id); emit changed(); }
         return;
     }
+    if (index == 2 && m_screenRecovering) return;
     if (!m_stopping) {
         const QString log = QString::fromUtf8(index == 2 ? m_screenLog.right(1600) : m_audioLog[index].right(1600));
-        stop(tr("%1 capture stopped. %2").arg(id, log));
+        if (index == 2 && (source("screen").contains("firstMonotonicUs") || m_screenRetries)) screenFailure(tr("Screen recorder exited. %1").arg(log));
+        else stop(tr("%1 capture stopped. %2").arg(id, log));
     } else if (code != 0 && code != 255 && m_error.isEmpty()) m_error = tr("%1 did not stop cleanly; the file will be checked.").arg(id);
 }
 
@@ -270,13 +336,14 @@ bool SessionRecorder::workersRunning() const {
 
 void SessionRecorder::stop(const QString &reason) {
     if (!m_busy || m_stopping) return;
+    m_captureHealth.stop(); m_screenRecovering = false;
     m_error = reason; m_stopping = true; m_state = "stopping";
     m_manifest["stoppedMonotonicUs"] = double(monotonicUs()); m_manifest["state"] = "stopping"; save();
     m_stopClock.start();
     // Request all stops together; sequential waits would lengthen later sources.
     if (m_cameraRunning) emit cameraStopRequested();
     for (auto &p : m_audio) if (p.state() != QProcess::NotRunning) p.write("q\n");
-    if (m_screen.state() != QProcess::NotRunning) ::kill(m_screen.processId(), SIGINT);
+    if (m_screen.processId() > 0) ::kill(m_screen.processId(), SIGINT);
     emit changed();
 }
 
@@ -286,29 +353,63 @@ void SessionRecorder::poll() {
         if (m_stopClock.isValid() && m_stopClock.elapsed() > 10000 && m_probe.state() != QProcess::NotRunning) { m_probe.kill(); }
         return;
     }
-    if (!m_stopping && selected(m_settings, "screen") && !source("screen").contains("firstMonotonicUs")) {
-        QFile ts(QDir(m_directory).filePath(screenOutput() + ".ts"));
+    if (!m_stopping && m_screenRecovering) {
+        if (m_screen.state() != QProcess::NotRunning) {
+            if (monotonicUs() - m_retryUs > 8000000) m_screen.kill();
+        } else if (monotonicUs() - m_retryUs > 1000000) {
+            m_screenId = QString("screen-%1").arg(m_screenRetries + 1, 3, 10, QChar('0'));
+            auto sources = m_manifest["sources"].toArray();
+            sources.append(QJsonObject{{"id", m_screenId}, {"kind", "Video"}, {"state", "starting"}, {"file", m_screenId + ".partial.mkv"}});
+            m_manifest["sources"] = sources; save(); launchScreen();
+        }
+    }
+    if (!m_stopping && !m_screenRecovering && selected(m_settings, "screen") && !source("screen").contains("firstMonotonicUs")) {
+        QFile ts(QDir(m_directory).filePath(screenOutput(source("screen")["file"].toString()) + ".ts"));
         if (ts.open(QIODevice::ReadOnly)) {
             const auto values = QString::fromUtf8(ts.read(4096)).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
             for (int i = 0; i + 1 < values.size(); ++i) {
                 bool ok = false; const auto mono = values[i].toLongLong(&ok); if (!ok || mono < 1) continue;
                 const auto real = values[i + 1].toLongLong(&ok); if (!ok || real < 1000000000000000LL) continue;
                 timestamp("screen", mono, real);
-                ts.close(); ts.rename(QDir(m_directory).filePath("screen.partial.mkv.ts"));
+                ts.close(); ts.rename(QDir(m_directory).filePath(source("screen")["file"].toString() + ".ts"));
+                if (m_screenRetries) {
+                    auto events = m_manifest["screenInterruptions"].toArray();
+                    auto event = events.last().toObject();
+                    m_interruptionWarning = tr("Screen capture resumed. Check the interruption at %1 before editing.").arg(event["recordingTimecode"].toString());
+                    event["resumedMonotonicUs"] = double(mono); events.last() = event;
+                    m_manifest["screenInterruptions"] = events; save();
+                }
                 launchSources(); break;
             }
         }
     }
+    if (!m_stopping && !m_screenRecovering && selected(m_settings, "screen")) {
+        const auto now = monotonicUs();
+        const auto size = QFileInfo(QDir(m_directory).filePath(source("screen")["file"].toString())).size();
+        if (size > m_screenSize) { m_screenSize = size; m_screenProgressUs = now; }
+        if (source("screen").contains("firstMonotonicUs")) {
+            if (m_settings["screenTarget"] != "portal" || m_captureHealth.linked()) m_screenHealth = "live";
+            else if (now - m_screenLaunchUs > 10000000 && m_screenHealth != "unavailable") {
+                m_screenHealth = "unavailable";
+                m_monitorWarning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording."); save();
+            }
+            // The muxer can buffer small CFR frames for a still desktop. Only
+            // treat silence on BOTH outputs as a stall; a dropped preview
+            // branch alone must never interrupt the primary file.
+            if (now - m_screenProgressUs > 10000000 && now - m_screenBytesUs > 10000000)
+                screenFailure(tr("The screen recorder stopped producing data."));
+        } else if (m_screenRetries && now - m_screenLaunchUs > 20000000) screenFailure(tr("The replacement screen capture did not deliver a frame."));
+    }
     if (!m_stopping) {
         const qint64 elapsed = monotonicUs() - m_epochMono;
         bool ready = m_sourcesLaunched;
-        for (const auto &v : m_manifest["sources"].toArray()) if (!v.toObject().contains("firstMonotonicUs")) ready = false;
+        for (const auto &v : m_manifest["sources"].toArray()) if ((v.toObject()["id"] == m_screenId || !v.toObject()["id"].toString().startsWith("screen")) && !v.toObject().contains("firstMonotonicUs")) ready = false;
         if (ready && m_state != "recording") { m_state = "recording"; m_manifest["state"] = "recording"; save(); }
         if (m_state == "waiting-screen" && elapsed > 120000000) stop(tr("Screen selection timed out or was cancelled."));
         else if (m_state == "starting" && ((m_sourcesLaunched && monotonicUs() - m_sourcesStarted > 20000000) || (!m_sourcesLaunched && elapsed > 20000000))) stop(tr("A source did not deliver its first frame or audio packet."));
         if (QStorageInfo(m_directory).bytesAvailable() < 256LL * 1024 * 1024) stop(tr("Low disk space. The session was stopped to protect its files."));
         const auto drift = (QDateTime::currentMSecsSinceEpoch() * 1000 - m_epochReal) - elapsed;
-        if (qAbs(drift) > 250000) m_warning = tr("The system clock changed during capture. Check alignment before editing.");
+        if (qAbs(drift) > 250000) m_timingWarning = tr("The system clock changed during capture. Check alignment before editing.");
     }
     if (m_stopping && workersRunning()) {
         if (m_stopClock.elapsed() > 8000) {
@@ -325,7 +426,8 @@ void SessionRecorder::poll() {
 
 void SessionRecorder::save() {
     if (m_directory.isEmpty()) return;
-    m_manifest["error"] = m_error; m_manifest["warning"] = m_warning;
+    m_manifest["error"] = m_error; m_manifest["warning"] = warning();
+    m_manifest["warnings"] = QJsonObject{{"interruption", m_interruptionWarning}, {"monitoring", m_monitorWarning}, {"timing", m_timingWarning}, {"other", m_warning}};
     QSaveFile file(QDir(m_directory).filePath("session.json"));
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(m_manifest).toJson()) < 0 || !file.commit()) {
         if (m_error.isEmpty()) m_error = tr("Could not save session metadata. Check disk space and permissions.");
@@ -369,39 +471,73 @@ void SessionRecorder::probeFinished(int code) {
 
 QJsonObject SessionRecorder::timeline(const QJsonObject &manifest, const QString &directory) {
     qint64 first = 0;
-    for (const auto &v : manifest["sources"].toArray()) { auto s = v.toObject(); auto t = qint64(s["firstMonotonicUs"].toDouble()); if (!t || s["state"] != "saved") return {}; if (!first || t < first) first = t; }
-    QJsonArray tracks;
     for (const auto &v : manifest["sources"].toArray()) {
-        const auto s = v.toObject(); const double offset = (s["firstMonotonicUs"].toDouble() - first) / 1000000;
-        const double duration = s["durationSeconds"].toDouble(); QJsonArray children;
-        if (offset > 0) children.append(QJsonObject{{"OTIO_SCHEMA", "Gap.1"}, {"source_range", range(0, offset)}});
-        children.append(QJsonObject{{"OTIO_SCHEMA", "Clip.2"}, {"name", s["id"]}, {"source_range", range(0, duration)},
+        const auto s = v.toObject(); const auto t = qint64(s["firstMonotonicUs"].toDouble());
+        if (s["state"] == "saved" && t && (!first || t < first)) first = t;
+    }
+    if (!first) return {};
+    QJsonArray tracks;
+    QHash<QString, int> indices;
+    QHash<QString, double> ends;
+    for (const auto &v : manifest["sources"].toArray()) {
+        const auto s = v.toObject();
+        if (s["state"] != "saved" || !s.contains("firstMonotonicUs")) continue;
+        const QString id = s["id"].toString(), trackId = id.startsWith("screen-") ? "screen" : id;
+        const double offset = (s["firstMonotonicUs"].toDouble() - first) / 1000000;
+        const double duration = s["durationSeconds"].toDouble();
+        if (!indices.contains(trackId)) {
+            indices[trackId] = tracks.size();
+            tracks.append(QJsonObject{{"OTIO_SCHEMA", "Track.1"}, {"name", trackId}, {"kind", s["kind"]}, {"children", QJsonArray{}}});
+        }
+        auto track = tracks[indices[trackId]].toObject(); auto children = track["children"].toArray();
+        if (offset > ends[trackId]) children.append(QJsonObject{{"OTIO_SCHEMA", "Gap.1"}, {"source_range", range(0, offset - ends[trackId])}});
+        // A finalized CFR segment may extend slightly past the next start. Trim
+        // its tail to retain measured timing instead of shifting later clips.
+        if (offset < ends[trackId] && !children.isEmpty()) {
+            auto previous = children.last().toObject(); auto sourceRange = previous["source_range"].toObject();
+            const double oldDuration = sourceRange["duration"].toObject()["value"].toDouble() / 60;
+            sourceRange["duration"] = rational(qMax(0.0, oldDuration - (ends[trackId] - offset)));
+            previous["source_range"] = sourceRange; children.last() = previous;
+        }
+        children.append(QJsonObject{{"OTIO_SCHEMA", "Clip.2"}, {"name", id}, {"source_range", range(0, duration)},
             {"media_references", QJsonObject{{"DEFAULT_MEDIA", QJsonObject{{"OTIO_SCHEMA", "ExternalReference.1"}, {"target_url", QUrl::fromLocalFile(QDir(directory).filePath(s["file"].toString())).toString()}, {"available_range", range(0, duration)}}}}},
             {"active_media_reference_key", "DEFAULT_MEDIA"}});
-        tracks.append(QJsonObject{{"OTIO_SCHEMA", "Track.1"}, {"name", s["id"]}, {"kind", s["kind"]}, {"children", children}});
+        track["children"] = children; tracks[indices[trackId]] = track; ends[trackId] = offset + duration;
     }
     return {{"OTIO_SCHEMA", "Timeline.1"}, {"name", QFileInfo(directory).fileName()}, {"global_start_time", rational(0)},
         {"tracks", QJsonObject{{"OTIO_SCHEMA", "Stack.1"}, {"children", tracks}}}};
 }
 
 void SessionRecorder::complete() {
-    qint64 first = 0;
+    const auto interruptions = m_manifest["screenInterruptions"].toArray();
+    if (!interruptions.isEmpty() && m_error.isEmpty()) {
+        QStringList times;
+        for (const auto &value : interruptions) {
+            const auto event = value.toObject();
+            times << (event.contains("recordingTimecode") ? event["recordingTimecode"].toString() : tr("unknown time"));
+        }
+        m_interruptionWarning = tr("Saved with screen interruptions at %1. Check these points and the timeline gaps before editing.").arg(times.join(", "));
+    }
+    qint64 first = 0; bool timingMissing = false;
     auto sources = m_manifest["sources"].toArray();
     for (const auto &v : sources) { const auto t = qint64(v.toObject()["firstMonotonicUs"].toDouble()); if (t && (!first || t < first)) first = t; }
     for (int i = 0; i < sources.size(); ++i) {
         auto s = sources[i].toObject();
         if (s.contains("firstMonotonicUs")) s["startOffsetSeconds"] = (s["firstMonotonicUs"].toDouble() - first) / 1000000;
-        else { s["timingUnknown"] = true; m_warning = tr("Some timing information is missing. Align those files manually."); }
+        else { s["timingUnknown"] = true; timingMissing = true; }
         sources[i] = s;
     }
     m_manifest["sources"] = sources;
+    const QString missing = tr("Some timing information is missing. Align those files manually.");
+    if (timingMissing && !m_timingWarning.contains(missing)) m_timingWarning = QStringList{m_timingWarning, missing}.join(' ').trimmed();
     const auto edit = timeline(m_manifest, m_directory);
     if (!edit.isEmpty()) {
         QSaveFile file(QDir(m_directory).filePath("timeline.otio"));
         if (file.open(QIODevice::WriteOnly)) { file.write(QJsonDocument(edit).toJson()); if (file.commit()) m_manifest["timeline"] = "timeline.otio"; }
     }
     m_busy = false; m_stopping = false; m_state = m_error.isEmpty() ? "saved" : "error";
-    m_manifest["state"] = m_error.isEmpty() ? "complete" : "incomplete"; save(); emit changed(); emit finished();
+    m_manifest["state"] = m_error.isEmpty() ? "complete" : "incomplete";
+    m_manifest["hasScreenGaps"] = !m_manifest["screenInterruptions"].toArray().isEmpty(); save(); emit changed(); emit finished();
 }
 
 bool SessionRecorder::recover(const QString &root) {
@@ -417,7 +553,10 @@ bool SessionRecorder::recover(const QString &root) {
         bool safe = true;
         for (const auto &v : manifest["sources"].toArray()) { const auto name = v.toObject()["file"].toString(); if (name.isEmpty() || name != QFileInfo(name).fileName()) safe = false; }
         if (!safe) continue;
-        stopPreview(); m_manifest = manifest; m_directory = directory.filePath(name); m_started = 0; m_error.clear(); m_warning.clear();
+        stopPreview(); m_manifest = manifest; m_directory = directory.filePath(name); m_started = 0; m_error.clear();
+        const auto parts = manifest["warnings"].toObject();
+        m_interruptionWarning = parts["interruption"].toString(); m_monitorWarning = parts["monitoring"].toString(); m_timingWarning = parts["timing"].toString();
+        m_warning = manifest.contains("warnings") ? parts["other"].toString() : manifest["warning"].toString();
         m_busy = true; m_stopping = false; m_state = "validating"; m_validationIndex = 0; save(); validateNext(); emit changed(); return true;
     }
     m_warning = tr("No interrupted session was found in this folder."); emit changed(); return false;

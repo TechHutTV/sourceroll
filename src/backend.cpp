@@ -2,6 +2,9 @@
 #include "session.h"
 
 #include <QDateTime>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
+#include <QDBusConnection>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -20,12 +23,29 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cmath>
+#include <functional>
 
 static QByteArray query(const QString &program, const QStringList &args) {
     QProcess process;
     process.start(program, args);
     if (!process.waitForFinished(2500)) { process.kill(); process.waitForFinished(500); return {}; }
     return process.exitCode() == 0 ? process.readAllStandardOutput() : QByteArray();
+}
+
+bool Backend::omaControlOpen(const QByteArray &layers) {
+    if (layers.size() > 1024 * 1024) return false;
+    const auto doc = QJsonDocument::fromJson(layers);
+    // hyprctl layers: monitor -> levels -> arrays of layer surfaces.
+    std::function<bool(const QJsonValue &, int)> contains = [&](const QJsonValue &v, int depth) {
+        if (depth > 8) return false;
+        if (v.isObject()) {
+            const auto object = v.toObject();
+            if (object["namespace"] == "omacontrol") return true;
+            for (const auto &child : object) if (contains(child, depth + 1)) return true;
+        } else if (v.isArray()) for (const auto &child : v.toArray()) if (contains(child, depth + 1)) return true;
+        return false;
+    };
+    return doc.isObject() && contains(doc.object(), 0);
 }
 
 QString Backend::socketPath() {
@@ -159,6 +179,33 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
             fail(tr("The camera did not deliver a frame. Check that it is connected and not in use by another app."));
         }
     });
+    m_displayPoll.setInterval(1000);
+    connect(&m_displayPoll, &QTimer::timeout, this, [this] {
+        if (!m_session->busy() || !m_settings["screenEnabled"].toBool()) { m_displaySettingsOpen = false; return; }
+        if (m_displayQuery.state() != QProcess::NotRunning) { m_displayQuery.kill(); return; }
+        m_displayQuery.start("hyprctl", {"-j", "layers"});
+    });
+    connect(&m_displayQuery, &QProcess::readyReadStandardError, this, [this] { m_displayQuery.readAllStandardError(); });
+    connect(&m_displayQuery, &QProcess::finished, this, [this](int code) {
+        m_displaySettingsOpen = code == 0 && m_session->busy() && omaControlOpen(m_displayQuery.readAllStandardOutput());
+        emit statusChanged();
+    });
+    m_displayPoll.start();
+    // Notifications remain visible when the recording window and bar popup are hidden.
+    connect(this, &Backend::statusChanged, this, [this] {
+        const auto s = status();
+        QString notice = s["error"].toString();
+        if (notice.isEmpty()) notice = s["warning"].toString();
+        if (!s["displayWarning"].toString().isEmpty()) notice += (notice.isEmpty() ? QString() : QString("\n")) + s["displayWarning"].toString();
+        if (notice == m_lastNotice) return;
+        m_lastNotice = notice;
+        if (notice.isEmpty()) return;
+        auto message = QDBusMessage::createMethodCall("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications", "Notify");
+        message.setArguments({"Sourceroll", uint(0), "sourceroll", tr("Recording needs attention"), notice.toHtmlEscaped(),
+            QStringList{}, QVariantMap{}, 10000});
+        QDBusConnection::sessionBus().asyncCall(message);
+    });
     refreshDevices();
     if (!migrationError.isEmpty()) fail(migrationError);
 }
@@ -168,6 +215,7 @@ Backend::~Backend() { shutdown(); }
 void Backend::shutdown() {
     if (m_shuttingDown) return;
     m_shuttingDown = true;
+    m_displayPoll.stop(); m_displayQuery.kill(); m_displayQuery.waitForFinished(1000);
     m_restart.stop(); m_tick.stop(); m_watchdog.stop();
     stopScreenPreview();
     m_session->stop(); stopProcess(); m_session->shutdown();
@@ -270,6 +318,8 @@ QVariantMap Backend::status() const {
     const bool hasSession = !result.value("output").toString().isEmpty();
     if (!busy && !hasSession) { result["state"] = m_state; result["error"] = m_error; }
     if (!busy && !m_error.isEmpty()) { result["state"] = "error"; result["error"] = m_error; }
+    result["displayWarning"] = busy && m_settings["screenEnabled"].toBool() && m_displaySettingsOpen
+        ? tr("OmaControl is open during screen recording. Changing display settings can interrupt capture. Wait until recording has finished before changing displays.") : QString();
     result["running"] = true; result["recording"] = busy;
     result["preview"] = m_process.state() != QProcess::NotRunning;
     result["peakDb"] = m_peak; result["desktopPeakDb"] = m_desktopPeak;

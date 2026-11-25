@@ -38,7 +38,7 @@ public:
     double desktopPeakDb() const { return -28; }
     QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
     QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Sourceroll"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
-    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"output", "/Videos/Sourceroll/take-demo"}}; }
+    QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}}; }
     int frameNumber() const { return 1; }
     double peakDb() const { return -18; }
     Q_INVOKABLE void setWindowVisible(bool) {}
@@ -51,6 +51,7 @@ public:
     Q_INVOKABLE void shutdown() {}
     Q_INVOKABLE bool setSetting(const QString &, const QVariant &) { return true; }
     bool recording = false;
+    QString warning, displayWarning;
 signals:
     void statusChanged();
     void screenChoiceRequested();
@@ -79,6 +80,163 @@ private:
         QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(contents), contents.size());
     }
 private slots:
+    void recordingTimecodesIncludeMillisecondsAndLongTakes() {
+        QCOMPARE(SessionRecorder::recordingTimecode(689.123), "00:11:29.123");
+        QCOMPARE(SessionRecorder::recordingTimecode(59.9999), "00:01:00.000");
+        QCOMPARE(SessionRecorder::recordingTimecode(90061.007), "25:01:01.007");
+        QCOMPARE(SessionRecorder::recordingTimecode(-1), "00:00:00.000");
+    }
+    void pipewireHealthTracksOnlyRecorderAndHandlesSplitUpdates() {
+        CaptureHealth health; health.reset(1234); QSignalSpy failures(&health, &CaptureHealth::failed);
+        const QByteArray graph = R"([{"id":10,"type":"PipeWire:Interface:Client","info":{"props":{"application.process.id":1234}}},{"id":20,"type":"PipeWire:Interface:Node","info":{"props":{"client.id":10},"state":"running"}},{"id":30,"type":"PipeWire:Interface:Link","info":{"input-node-id":20,"output-node-id":50,"state":"active"}},{"id":31,"type":"PipeWire:Interface:Link","info":{"input-node-id":99,"output-node-id":50,"state":"error"}}])";
+        for (char c : graph) health.ingest(QByteArray(1, c));
+        QVERIFY(health.linked()); QCOMPARE(failures.count(), 0);
+        // Encoded pictures can remain identical indefinitely. Graph updates,
+        // including unrelated failures, must not restart a healthy still desktop.
+        health.ingest(R"([{"id":31,"info":{"state":"error"}}][{"id":20,"info":{"state":"running"}}])");
+        QCOMPARE(failures.count(), 0);
+        health.ingest(R"json([{"id":30,"info":{"state":"error","error":"alloc buffers: Invalid argument (-22)"}}])json");
+        QCOMPARE(failures.count(), 1); QVERIFY(failures[0][0].toString().contains("buffers"));
+        health.ingest(R"([{"id":30,"info":null}])"); QCOMPARE(failures.count(), 1);
+        health.reset(1234); health.ingest(graph); QVERIFY(health.linked());
+        health.ingest(R"([{"id":30,"info":null}])"); QCOMPARE(failures.count(), 2);
+        health.reset(7777); health.ingest(graph); QVERIFY(!health.linked());
+    }
+    void omaControlWarningRecognizesLayerSurface() {
+        QVERIFY(Backend::omaControlOpen(R"({"DP-3":{"levels":{"3":[{"namespace":"omacontrol"}]}}})"));
+        QVERIFY(!Backend::omaControlOpen(R"({"DP-3":{"levels":{"3":[{"namespace":"omarchy-bar"}]}}})"));
+        QVERIFY(!Backend::omaControlOpen("invalid"));
+        QVERIFY(!Backend::omaControlOpen(QByteArray(1024 * 1024 + 1, 'x')));
+    }
+    void screenSegmentsShareTrackWithMeasuredGap() {
+        QJsonObject manifest{{"sources", QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","Video"},{"file","screen.mkv"},{"state","saved"},{"firstMonotonicUs",10000000},{"durationSeconds",3}},
+            QJsonObject{{"id","camera"},{"kind","Video"},{"file","camera.mkv"},{"state","saved"},{"firstMonotonicUs",10000000},{"durationSeconds",10}},
+            QJsonObject{{"id","screen-002"},{"kind","Video"},{"file","screen-002.mkv"},{"state","saved"},{"firstMonotonicUs",15000000},{"durationSeconds",5}},
+            QJsonObject{{"id","screen-003"},{"kind","Video"},{"file","screen-003.partial.mkv"},{"state","incomplete"}}
+        }}};
+        const auto tracks = SessionRecorder::timeline(manifest, "/tmp/take")["tracks"].toObject()["children"].toArray();
+        QCOMPARE(tracks.size(), 2);
+        const auto children = tracks[0].toObject()["children"].toArray(); QCOMPARE(children.size(), 3);
+        QCOMPARE(children[1].toObject()["OTIO_SCHEMA"].toString(), "Gap.1");
+        QCOMPARE(children[1].toObject()["source_range"].toObject()["duration"].toObject()["value"].toDouble(), 120.0);
+        QCOMPARE(children[2].toObject()["name"].toString(), "screen-002");
+    }
+    void screenRecoveryPreservesCameraAndCanBeStopped_data() {
+        QTest::addColumn<bool>("stopDuringRetry"); QTest::addColumn<bool>("linkFailure");
+        QTest::newRow("resume") << false << false;
+        QTest::newRow("user-stop") << true << false;
+        QTest::newRow("live-process-link-failure") << false << true;
+    }
+    void screenRecoveryPreservesCameraAndCanBeStopped() {
+        QFETCH(bool, stopDuringRetry); QFETCH(bool, linkFailure);
+        QTemporaryDir dir;
+        QProcess encoder; const auto fixture = dir.filePath("fixture.mkv");
+        encoder.start("ffmpeg", {"-v","error","-f","lavfi","-i","testsrc2=size=64x64:rate=10","-t","0.5","-c:v","libx264",fixture});
+        QVERIFY(encoder.waitForFinished(5000)); QCOMPARE(encoder.exitCode(), 0);
+        const auto program = dir.filePath("fake-screen");
+        write(program, QByteArray("#!/usr/bin/python3\nimport sys,time,pathlib,shutil,signal\nargs=sys.argv[1:]\nout=args[args.index('-o')+1]\nname=out.split(']')[1].split('|')[0]\nshutil.copyfile('") + fixture.toUtf8() + R"(',name)
+pathlib.Path(out+'.ts').write_text(str(time.monotonic_ns()//1000)+' '+str(time.time_ns()//1000))
+signal.signal(signal.SIGINT,lambda *a: sys.exit(0))
+if name == 'screen.partial.mkv':
+ time.sleep(1)
+ sys.exit(1)
+while True: time.sleep(.05)
+)");
+        QVERIFY(QFile::setPermissions(program,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        const auto monitor = dir.filePath("fake-pw-dump");
+        if (linkFailure) {
+            QFile script(program); QVERIFY(script.open(QIODevice::ReadOnly)); auto code = script.readAll(); script.close();
+            code.replace("import sys,time,pathlib,shutil,signal", "import sys,time,pathlib,shutil,signal,os");
+            code.replace("if name == 'screen.partial.mkv':", "if False:");
+            code.replace("while True:", QByteArray("pathlib.Path('") + dir.filePath("pid").toUtf8() + "').write_text(str(os.getpid())+' '+name)\nwhile True:");
+            write(program, code);
+            write(monitor, QByteArray("#!/usr/bin/python3\nimport json,time,pathlib,os\np=pathlib.Path('") + dir.filePath("pid").toUtf8() + R"(')
+while True:
+ try:
+  pid,name=p.read_text().split()
+  os.kill(int(pid),0)
+  break
+ except (FileNotFoundError,ProcessLookupError,ValueError): time.sleep(.02)
+print(json.dumps([{'id':20,'type':'PipeWire:Interface:Node','info':{'props':{'application.process.id':int(pid)},'state':'running'}},{'id':30,'type':'PipeWire:Interface:Link','info':{'input-node-id':20,'output-node-id':50,'state':'active'}}]),flush=True)
+if name == 'screen.partial.mkv':
+ time.sleep(.6)
+ print(json.dumps([{'id':30,'info':{'state':'error','error':'alloc buffers: Invalid argument (-22)'}}]),flush=True)
+while True: time.sleep(.1)
+)");
+            QVERIFY(QFile::setPermissions(monitor,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        }
+        SessionRecorder session(nullptr, program, "ffmpeg", linkFailure ? monitor : QString("pw-dump"));
+        QSignalSpy starts(&session, &SessionRecorder::cameraStartRequested), stops(&session, &SessionRecorder::cameraStopRequested);
+        connect(&session, &SessionRecorder::cameraStartRequested, this, [&](const QString &file) {
+            QVERIFY(QFile::copy(fixture, file)); session.cameraTimestamp(QDateTime::currentMSecsSinceEpoch()*1000);
+        });
+        connect(&session, &SessionRecorder::cameraStopRequested, this, [&] { session.cameraFinished(0, {}); });
+        QJsonObject selected{{"directory",dir.path()},{"cameraEnabled",true},{"screenEnabled",true},
+            {"microphoneEnabled",false},{"desktopEnabled",false},{"screenTarget",linkFailure ? "portal" : "DP-3"}};
+        QVERIFY(session.start(selected));
+        QTRY_COMPARE_WITH_TIMEOUT(session.status()["screenRecoveryAttempts"].toInt(),1,5000);
+        QCOMPARE(starts.count(), 1); QCOMPARE(stops.count(), 0);
+        QVERIFY(session.status()["warning"].toString().contains("Reconnecting"));
+        const auto event = session.status()["session"].toMap()["screenInterruptions"].toList().first().toMap();
+        const auto timecode = event["recordingTimecode"].toString();
+        QVERIFY(!timecode.isEmpty()); QVERIFY(event["recordingOffsetSeconds"].toDouble() > 0);
+        QVERIFY(QDateTime::fromString(event["detectedAtUtc"].toString(), Qt::ISODateWithMs).isValid());
+        QVERIFY(session.status()["warning"].toString().contains(timecode));
+        if (!stopDuringRetry) {
+            QTRY_COMPARE_WITH_TIMEOUT(session.status()["screenHealth"].toString(),"live",5000);
+            QCOMPARE(session.status()["sources"].toList().size(), 3);
+        }
+        session.stop(); QTRY_VERIFY_WITH_TIMEOUT(!session.busy(),5000);
+        QCOMPARE(starts.count(), 1); QCOMPARE(stops.count(), 1);
+        QCOMPARE(session.status()["state"].toString(), "saved");
+        QVERIFY(QFileInfo::exists(session.status()["output"].toString()+"/screen.mkv"));
+        QVERIFY(session.status()["session"].toMap()["hasScreenGaps"].toBool());
+        QVERIFY(session.status()["warning"].toString().contains(timecode));
+        if (!stopDuringRetry) QVERIFY(QFileInfo::exists(session.status()["output"].toString()+"/screen-002.mkv"));
+        const auto count = session.status()["sources"].toList().size(); QTest::qWait(1200);
+        QCOMPARE(session.status()["sources"].toList().size(), count); // no delayed restart after Stop
+    }
+    void bufferedFileWithLiveEncodedOutputIsNotAStall() {
+        QTemporaryDir dir; const auto program = dir.filePath("buffered-screen");
+        write(program, R"(#!/usr/bin/python3
+import sys,time,pathlib,signal
+args=sys.argv[1:]; out=args[args.index('-o')+1]
+pathlib.Path(out+'.ts').write_text(str(time.monotonic_ns()//1000)+' '+str(time.time_ns()//1000))
+signal.signal(signal.SIGINT,lambda *a:sys.exit(0))
+while True:
+ sys.stdout.buffer.write(b'encoded-packet')
+ sys.stdout.buffer.flush()
+ time.sleep(.1)
+)");
+        QVERIFY(QFile::setPermissions(program,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        SessionRecorder session(nullptr,program);
+        QVERIFY(session.start({{"directory",dir.path()},{"cameraEnabled",false},{"screenEnabled",true},
+            {"microphoneEnabled",false},{"desktopEnabled",false},{"screenTarget","DP-3"}}));
+        QTRY_COMPARE(session.status()["state"].toString(),"recording");
+        QTest::qWait(11000);
+        QVERIFY(session.busy()); QCOMPARE(session.status()["screenRecoveryAttempts"].toInt(),0);
+        session.stop(); QTRY_VERIFY_WITH_TIMEOUT(!session.busy(),5000);
+    }
+    void recoveryRetriesAreBounded() {
+        QTemporaryDir dir; const auto program = dir.filePath("fake-screen");
+        write(program, R"(#!/usr/bin/python3
+import sys,time,pathlib
+args=sys.argv[1:]; out=args[args.index('-o')+1]
+pathlib.Path(out+'.ts').write_text(str(time.monotonic_ns()//1000)+' '+str(time.time_ns()//1000))
+time.sleep(.3)
+sys.exit(1)
+)");
+        QVERIFY(QFile::setPermissions(program,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
+        SessionRecorder session(nullptr,program);
+        QVERIFY(session.start({{"directory",dir.path()},{"cameraEnabled",false},{"screenEnabled",true},
+            {"microphoneEnabled",false},{"desktopEnabled",false},{"screenTarget","DP-3"}}));
+        QTRY_VERIFY_WITH_TIMEOUT(!session.busy(),10000);
+        QCOMPARE(session.status()["screenRecoveryAttempts"].toInt(),3);
+        QCOMPARE(session.status()["screenHealth"].toString(),"failed");
+        QVERIFY(session.status()["error"].toString().contains("three retries"));
+        QCOMPARE(session.status()["session"].toMap()["screenInterruptions"].toList().size(),4);
+    }
     void screenMonitorDecodesActualStreamAndDetectsStaleness() {
         QTemporaryDir dir; const auto file = dir.filePath("screen.ts");
         QProcess encoder; encoder.start("ffmpeg", {"-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15", "-t", "3", "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-f", "mpegts", file});
@@ -306,6 +464,15 @@ private slots:
         QTRY_VERIFY(!popup->property("visible").toBool());
         QTest::qWait(250); window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Space); QTRY_VERIFY(backend.recording);
+        auto displayWarning = window->findChild<QQuickItem *>("displayWarning"); QVERIFY(displayWarning);
+        auto captureWarning = window->findChild<QQuickItem *>("captureWarning"); QVERIFY(captureWarning);
+        QVERIFY(!displayWarning->isVisible());
+        backend.displayWarning = "OmaControl is open during screen recording.";
+        backend.warning = "Screen capture interrupted. Reconnecting…"; emit backend.statusChanged();
+        QTRY_VERIFY(displayWarning->isVisible()); QTRY_VERIFY(captureWarning->isVisible());
+        QCOMPARE(displayWarning->property("text").toString(), backend.displayWarning);
+        backend.displayWarning.clear(); backend.warning.clear(); emit backend.statusChanged();
+        QTRY_VERIFY(!displayWarning->isVisible()); QTRY_VERIFY(!captureWarning->isVisible());
         QTest::keyClick(window, Qt::Key_Space); QTRY_VERIFY(!backend.recording);
         auto screenshot = window->grabWindow(); QVERIFY(!screenshot.isNull());
         QString path = qEnvironmentVariable("SOURCE_RECORD_SCREENSHOT");
