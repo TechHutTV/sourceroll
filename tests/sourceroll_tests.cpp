@@ -25,7 +25,7 @@ class DemoBackend : public QObject {
     Q_PROPERTY(QVariantList desktopSources READ desktopSources CONSTANT)
     Q_PROPERTY(double desktopPeakDb READ desktopPeakDb CONSTANT)
     Q_PROPERTY(QVariantList modes READ modes CONSTANT)
-    Q_PROPERTY(QVariantMap settings READ settings CONSTANT)
+    Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY statusChanged)
     Q_PROPERTY(int frameNumber READ frameNumber CONSTANT)
     Q_PROPERTY(int screenFrameNumber READ frameNumber CONSTANT)
@@ -37,7 +37,7 @@ public:
     QVariantList desktopSources() const { return {QVariantMap{{"id", "desktop"}, {"label", "Desktop audio"}}}; }
     double desktopPeakDb() const { return -28; }
     QVariantList modes() const { return {QVariantMap{{"id", "1080"}, {"label", "1920 × 1080 · 30 fps · MJPEG"}}}; }
-    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Sourceroll"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}}; }
+    QVariantMap settings() const { return {{"camera", "demo"}, {"audio", "mic"}, {"mode", "1080"}, {"directory", "/Videos/Sourceroll"}, {"encoding", "original"}, {"cameraEnabled", true}, {"screenEnabled", true}, {"microphoneEnabled", true}, {"desktopEnabled", false}, {"screenTarget", "portal"}, {"screenFps", 60}, {"monitorLayout", monitorLayout}}; }
     QVariantMap status() const { return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"screenPreviewState", "live"}, {"cameraPreviewState", "live"}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}}; }
     int frameNumber() const { return 1; }
     double peakDb() const { return -18; }
@@ -49,11 +49,12 @@ public:
     Q_INVOKABLE bool recoverSession() { return true; }
     Q_INVOKABLE bool chooseScreen() { emit screenChoiceRequested(); return true; }
     Q_INVOKABLE void shutdown() {}
-    Q_INVOKABLE bool setSetting(const QString &, const QVariant &) { return true; }
+    Q_INVOKABLE bool setSetting(const QString &key, const QVariant &value) { if (key == "monitorLayout") { monitorLayout = value.toString(); emit settingsChanged(); } return true; }
     bool recording = false;
-    QString warning, displayWarning;
+    QString warning, displayWarning, monitorLayout;
 signals:
     void statusChanged();
+    void settingsChanged();
     void screenChoiceRequested();
 };
 
@@ -408,6 +409,8 @@ sys.exit(1)
         QFile file(dir.filePath("settings.json")); QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(QJsonDocument::fromJson(file.readAll()).object()["audio"].toString(), "none");
         QVERIFY(!backend.setSetting("unknown", "value"));
+        QVERIFY(!backend.setSetting("monitorLayout", "diagonal")); QVERIFY(backend.setSetting("monitorLayout", "stacked"));
+        QCOMPARE(backend.settings()["monitorLayout"].toString(), "stacked");
         QVERIFY(backend.setSetting("camera", "/dev/sourceroll-does-not-exist"));
         QVERIFY(!backend.start()); QCOMPARE(backend.status()["state"].toString(), "error");
         QVERIFY(!backend.status()["recording"].toBool());
@@ -456,6 +459,14 @@ sys.exit(1)
             QTRY_COMPARE(window->property("monitorView").toString(), view);
             QCOMPARE(screenMonitor->isVisible(), view != "camera");
             QCOMPARE(cameraMonitor->isVisible(), view != "screen");
+        }
+        auto layoutButton = window->findChild<QQuickItem *>("monitorLayout"); QVERIFY(layoutButton);
+        QVERIFY(screenMonitor->y() == cameraMonitor->y()); // wide window starts side by side
+        for (const QString &layout : {QString("stacked"), QString("side")}) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, layoutButton->mapToScene(QPointF(layoutButton->width()/2, layoutButton->height()/2)).toPoint());
+            QTRY_COMPARE(backend.monitorLayout, layout);
+            QTRY_COMPARE(screenMonitor->y() == cameraMonitor->y(), layout == "side");
+            QCOMPARE(screenMonitor->x() == cameraMonitor->x(), layout == "stacked");
         }
         auto cameraChoice = window->findChild<QQuickItem *>("cameraChoice"); QVERIFY(cameraChoice);
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, cameraChoice->mapToScene(QPointF(cameraChoice->width()/2, cameraChoice->height()/2)).toPoint());

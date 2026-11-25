@@ -202,7 +202,7 @@ Backend::Backend(const QString &configFile, QObject *parent) : QObject(parent),
         if (notice.isEmpty()) return;
         auto message = QDBusMessage::createMethodCall("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications", "Notify");
-        message.setArguments({"Sourceroll", uint(0), "sourceroll", tr("Recording needs attention"), notice.toHtmlEscaped(),
+        message.setArguments({"Source Roll", uint(0), "sourceroll", tr("Recording needs attention"), notice.toHtmlEscaped(),
             QStringList{}, QVariantMap{}, 10000});
         QDBusConnection::sessionBus().asyncCall(message);
     });
@@ -346,6 +346,11 @@ bool Backend::saveSettings() {
 }
 
 bool Backend::setSetting(const QString &key, const QVariant &value) {
+    // A display-only preference: it may change mid-recording and must not restart the preview.
+    if (key == "monitorLayout") {
+        if (m_shuttingDown || !QStringList{"side", "stacked"}.contains(value.toString())) return false;
+        m_settings[key] = value.toString(); emit settingsChanged(); return saveSettings();
+    }
     if (m_shuttingDown || m_session->busy() || m_state == "stopping") return false;
     if (!QStringList{"camera", "mode", "audio", "directory", "encoding", "cameraEnabled", "screenEnabled", "microphoneEnabled", "desktopEnabled", "screenTarget", "screenFps", "screenQuality", "desktopAudio"}.contains(key)) return false;
     if (key == "screenQuality" && !QStringList{"high", "very_high", "ultra"}.contains(value.toString())) return false;
@@ -551,7 +556,7 @@ bool Backend::importLegacySettings(const QString &legacy, const QString &target,
     const auto data = input.read(65537);
     const auto doc = QJsonDocument::fromJson(data, &parseError);
     if (data.size() > 65536 || parseError.error != QJsonParseError::NoError || !doc.isObject() || doc.object().isEmpty()) return fail(tr("Previous settings are invalid; they were left unchanged."));
-    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail(tr("Could not create the Sourceroll settings folder."));
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) return fail(tr("Could not create the Source Roll settings folder."));
     QSaveFile output(target);
     if (!output.open(QIODevice::WriteOnly) || output.write(doc.toJson()) < 0) return fail(tr("Could not import previous settings."));
     if (QFileInfo::exists(target)) { output.cancelWriting(); return true; }

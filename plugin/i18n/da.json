@@ -1,6 +1,6 @@
 {
-  "bar.tooltip": "Sourceroll · klik for styring · midterklik optager / stopper · højreklik åbner forhåndsvisning",
-  "unavailable": "Optageren er utilgængelig. Åbn Sourceroll for at kontrollere den.",
+  "bar.tooltip": "Source Roll · klik for styring · midterklik optager / stopper · højreklik åbner forhåndsvisning",
+  "unavailable": "Optageren er utilgængelig. Åbn Source Roll for at kontrollere den.",
   "recording": "Optager · %1",
   "idle": "Klar til optagelse",
   "start": "Optag valgte kilder",

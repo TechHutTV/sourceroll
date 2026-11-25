@@ -35,7 +35,7 @@ def quit_resident():
     raise AssertionError('Resident did not finalize and quit')
 
 if call('status')['running']:
-    raise SystemExit('Quit Sourceroll first; the test will not disturb an existing session.')
+    raise SystemExit('Quit Source Roll first; the test will not disturb an existing session.')
 original = call('settings')['settings']
 with tempfile.TemporaryDirectory(prefix='sourceroll-smoke-') as directory:
     try:

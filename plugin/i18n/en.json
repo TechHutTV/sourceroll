@@ -1,6 +1,6 @@
 {
-  "bar.tooltip": "Sourceroll · click for controls · middle-click to record / stop · right-click for preview",
-  "unavailable": "Recorder unavailable. Open Sourceroll to check it.",
+  "bar.tooltip": "Source Roll · click for controls · middle-click to record / stop · right-click for preview",
+  "unavailable": "Recorder unavailable. Open Source Roll to check it.",
   "recording": "Recording · %1",
   "idle": "Ready to record",
   "start": "Record enabled sources",
