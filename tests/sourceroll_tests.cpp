@@ -880,6 +880,48 @@ for line in sys.stdin:
         QTRY_COMPARE(translator.language(), "en");
         QVERIFY(translator.translate("Main", "Open").isNull());
     }
+    void twoRealMonitorsRecordTogether() {
+        // Opt-in, because it captures this machine's own monitors: a few seconds of each,
+        // into a temporary folder that is removed when the test ends.
+        if (qEnvironmentVariable("SOURCEROLL_HARDWARE") != "monitors") QSKIP("Set SOURCEROLL_HARDWARE=monitors to record two real monitors for a few seconds.");
+        QTemporaryDir dir; const auto path = dir.filePath("settings.json");
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{}}}).toJson());
+        Backend backend(path);
+        QStringList monitors;
+        for (const auto &screen : backend.screens()) if (screen.toMap()["id"] != "portal") monitors << screen.toMap()["id"].toString();
+        if (monitors.size() < 2) QSKIP("Needs two connected monitors.");
+        const auto first = backend.addSource("screen"), second = backend.addSource("screen");
+        QVERIFY(backend.setSourceSetting(first, "target", monitors[0])); QVERIFY(backend.setSourceSetting(second, "target", monitors[1]));
+        QVERIFY(backend.setSourceSetting(second, "name", "Second monitor")); QVERIFY(backend.setSourceSetting(second, "fps", 30));
+        auto state = [&](const QString &id) {
+            for (const auto &value : backend.status()["videoSources"].toList()) if (value.toMap()["id"] == id) return value.toMap();
+            return QVariantMap();
+        };
+        // Both monitors preview without a permission prompt.
+        backend.setWindowVisible(true);
+        QTRY_VERIFY_WITH_TIMEOUT(backend.frame(first) > 0 && backend.frame(second) > 0, 20000);
+        QVERIFY(!backend.status()["screenSelecting"].toBool());
+        QVERIFY(backend.start());
+        QTRY_COMPARE_WITH_TIMEOUT(backend.status()["state"].toString(), "recording", 30000);
+        QTest::qWait(3000);
+        QVERIFY2(backend.status()["warning"].toString().isEmpty(), qPrintable(backend.status()["warning"].toString()));
+        QVERIFY(state(first)["recording"].toBool()); QVERIFY(state(second)["recording"].toBool());
+        QCOMPARE(state(first)["health"].toString(), "live"); QCOMPARE(state(second)["health"].toString(), "live");
+        QVERIFY(backend.frame(first) > 0); QVERIFY(backend.frame(second) > 0);
+        backend.stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.status()["recording"].toBool(), 30000);
+        QVERIFY2(backend.status()["error"].toString().isEmpty(), qPrintable(backend.status()["error"].toString()));
+        QCOMPARE(backend.status()["state"].toString(), "saved");
+        const auto take = backend.status()["output"].toString();
+        QVERIFY(QFileInfo::exists(take + "/screen.mkv")); QVERIFY(QFileInfo::exists(take + "/second-monitor.mkv")); QVERIFY(QFileInfo::exists(take + "/timeline.otio"));
+        for (const auto &value : backend.status()["sources"].toList()) {
+            const auto source = value.toMap(); const auto video = source["probe"].toMap()["streams"].toList().value(0).toMap();
+            QCOMPARE(source["state"].toString(), "saved"); QVERIFY(source["durationSeconds"].toDouble() > 2);
+            qInfo().noquote() << QString("%1: %2 x %3, %4 s, starts at %5 s").arg(source["file"].toString()).arg(video["width"].toInt()).arg(video["height"].toInt())
+                .arg(source["durationSeconds"].toDouble(), 0, 'f', 2).arg(source["startOffsetSeconds"].toDouble(), 0, 'f', 3);
+        }
+        backend.setWindowVisible(false);
+    }
     void realWindowDrivesTheRealBackend() {
         // The window's other test runs against a stand-in. This one checks the window
         // and the real backend agree on names, calls and signals, end to end.

@@ -168,7 +168,7 @@ int main(int argc, char *argv[]) {
         return cli(app.arguments());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName("sourceroll"); app.setApplicationVersion("0.5.0");
+    app.setApplicationName("sourceroll"); app.setApplicationVersion("0.6.0");
     app.setDesktopFileName("sourceroll");
     app.setWindowIcon(QIcon::fromTheme("sourceroll"));
     app.setQuitOnLastWindowClosed(false);
