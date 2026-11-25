@@ -8,7 +8,7 @@ Source Roll is a recording app for Omarchy, built for people who put their video
 
 ## What it does
 
-- Records any number of screens, windows, and cameras, plus a microphone and desktop audio. Add the sources you need, name them, and switch each on or off.
+- Records up to eight screens, windows, and cameras in total, plus a microphone and desktop audio, which don't count toward that limit. Add the sources you need, name them, and switch each on or off.
 - Saves every source as its own file, named after the source, so a second monitor or an overhead camera is easy to find in the editor.
 - Saves screen video at its native resolution, with 30 or 60 fps and three quality presets per screen.
 - Keeps supported camera streams in their original format, or encodes them as H.264.

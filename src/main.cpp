@@ -59,7 +59,7 @@ static QJsonObject send(const QJsonObject &request) {
 static int cli(const QStringList &args) {
     QString command = args.value(1, "status");
     if (command == "--help" || command == "help") {
-        puts("Source Roll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover [--json]\nsourceroll configure --audio SOURCE --directory PATH --microphone-enabled true|false --desktop-enabled true|false [--json]\nsourceroll source add screen|camera [OPTIONS] [--json]\nsourceroll source set ID [OPTIONS] [--json]\nsourceroll source remove ID [--json]\nsourceroll choose-screen [ID] [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nSource options: --name NAME --enabled true|false\n  screens: --target portal|MONITOR --fps 15-120 --quality high|very_high|ultra\n  cameras: --device PATH --mode MODE --encoding original|h264\nSource IDs are listed under videoSources by settings and status.\nconfigure also accepts --camera, --mode, --encoding, --camera-enabled, --screen-enabled,\n--screen-target, --screen-fps and --screen-quality for the first camera and screen.\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
+        puts("Source Roll — separate sources, one take\n\nsourceroll open\nsourceroll status|start|stop|toggle|settings|devices|ensure|recover [--json]\nsourceroll configure --audio SOURCE --directory PATH --microphone-enabled true|false --desktop-enabled true|false [--json]\nsourceroll source add screen|camera [OPTIONS] [--json]\nsourceroll source set ID [OPTIONS] [--json]\nsourceroll source remove ID [--json]\nsourceroll choose-screen [ID] [--json]\nsourceroll check [--json]\nsourceroll skill install\n\nSource options: --name NAME --enabled true|false (--name=NAME for a name starting with --)\n  screens: --target portal|MONITOR --fps 15-120 --quality high|very_high|ultra\n  cameras: --device PATH --mode MODE --encoding original|h264\nSource IDs are listed under videoSources by settings and status.\nconfigure also accepts --camera, --mode, --encoding, --camera-enabled, --screen-enabled,\n--screen-target, --screen-fps and --screen-quality for the first camera and screen.\n\nThe app and bar share one recorder. Closing the window keeps recording.\nRecordings use MKV; original MJPEG/H.264 camera streams are copied without re-encoding.");
         return 0;
     }
     if (command == "skill" && args.value(2) == "install") {
@@ -99,11 +99,18 @@ static int cli(const QStringList &args) {
         QJsonObject settings;
         for (int i = 4; i < args.size(); ++i) {
             if (args[i] == "--json") continue;
-            const QString key = args[i].mid(2);
-            if (verb == "remove" || !args[i].startsWith("--") || !QStringList{"name", "enabled", "target", "fps", "quality", "device", "mode", "encoding"}.contains(key) || i + 1 >= args.size()) {
+            // "--key VALUE", or "--key=VALUE" for a value that itself starts with "--".
+            QString key = args[i].mid(2), value;
+            const int equals = key.indexOf('=');
+            if (equals >= 0) { value = key.mid(equals + 1); key = key.left(equals); }
+            if (verb == "remove" || !args[i].startsWith("--") || !QStringList{"name", "enabled", "target", "fps", "quality", "device", "mode", "encoding"}.contains(key)) {
                 fputs("Invalid source option.\n", stderr); return 1;
             }
-            const QString value = args[++i];
+            if (equals < 0) {
+                // Another option where the value should be means the value was left out.
+                if (i + 1 >= args.size() || args[i + 1].startsWith("--")) { fputs(qPrintable(QString("--%1 needs a value.\n").arg(key)), stderr); return 1; }
+                value = args[++i];
+            }
             if (key == "enabled") {
                 if (value != "true" && value != "false") { fputs("Source switches require true or false.\n", stderr); return 1; }
                 settings[key] = value == "true";
@@ -201,13 +208,15 @@ int main(int argc, char *argv[]) {
             QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
             QObject::connect(socket, &QLocalSocket::readyRead, &backend, [&, socket] {
                 if (socket->bytesAvailable() > 65536) { socket->abort(); return; }
-                if (!socket->canReadLine()) return;
+                // Several requests can arrive together, such as a subscription and then a
+                // change of source. Take every complete line in order.
+                while (socket->canReadLine()) {
                 const auto request = QJsonDocument::fromJson(socket->readLine(65536)).object();
                 if (request["command"] == "subscribe-preview") {
                     // A viewer shows one source at a time. Naming it, here or in a later
                     // message on the same connection, keeps the others off the wire.
                     socket->setProperty("previewSource", request["source"].toString());
-                    if (socket->property("previewSubscribed").toBool()) return;
+                    if (socket->property("previewSubscribed").toBool()) continue;
                     socket->setProperty("previewSubscribed", true);
                     backend.addPreviewClient();
                     QObject::connect(socket, &QLocalSocket::disconnected, &backend, &Backend::removePreviewClient);
@@ -222,10 +231,10 @@ int main(int argc, char *argv[]) {
                         socket->write(QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n');
                         socket->flush();
                     });
-                    return;
+                    continue;
                 }
                 if (request["command"] == "subscribe-meter") {
-                    if (socket->property("meterSubscribed").toBool()) return;
+                    if (socket->property("meterSubscribed").toBool()) continue;
                     socket->setProperty("meterSubscribed", true);
                     auto push = [&, socket] {
                         // A paused shell gets the next live reading, never a growing stale queue.
@@ -236,11 +245,14 @@ int main(int argc, char *argv[]) {
                     };
                     QObject::connect(&backend, &Backend::peakChanged, socket, push);
                     push();
-                    return;
+                    continue;
                 }
+                // Anything else is answered once, and that ends the connection.
                 const auto response = backend.handle(request);
                 socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
                 socket->flush(); socket->disconnectFromServer();
+                return;
+                }
             });
         }
     });

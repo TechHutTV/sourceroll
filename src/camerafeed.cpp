@@ -83,8 +83,10 @@ void CameraFeed::record(const QJsonObject &source, const QString &file) { launch
 
 void CameraFeed::requestStop() {
     if (!running()) return;
-    // FFmpeg's own quit command lets it write the Matroska index and trailers.
-    m_process.write("q\n"); m_kill.start();
+    // FFmpeg's own quit command lets it write the Matroska index and trailers. The
+    // recorder repeats the request while it waits, so the deadline runs from the first.
+    m_process.write("q\n");
+    if (!m_kill.isActive()) m_kill.start();
 }
 
 void CameraFeed::stop() {

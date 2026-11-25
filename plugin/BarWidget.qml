@@ -66,13 +66,9 @@ Ui.BarWidget {
     }
     // Microphone and desktop audio.
     function setSource(key, enabled) { run(["sourceroll", "configure", "--" + key + "-enabled", enabled ? "true" : "false", "--json"]) }
-    // A screen or camera. Switching on a picked screen means choosing it again.
-    function setVideoSource(source, enabled) {
-        if (!Model.validId(source.id)) return
-        if (enabled && source.kind === "screen" && source.picker) run(["sourceroll", "choose-screen", source.id, "--json"])
-        else run(["sourceroll", "source", "set", source.id, "--enabled", enabled ? "true" : "false", "--json"])
-    }
-    function chooseScreen(source) { if (Model.validId(source.id)) run(["sourceroll", "choose-screen", source.id, "--json"]) }
+    // A screen or camera. The model picks the command the running recorder understands.
+    function setVideoSource(source, enabled) { const command = Model.switchCommand(source, enabled); if (command) run(command) }
+    function chooseScreen(source) { const command = Model.chooseCommand(source); if (command) run(command) }
     Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
     Socket {
         id: previewSocket

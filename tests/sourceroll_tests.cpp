@@ -52,7 +52,7 @@ public:
             video.append(QVariantMap{{"id", source["id"]}, {"kind", source["kind"]}, {"name", source["name"]}, {"enabled", on}, {"previewState", on ? "live" : "inactive"},
                 {"previewError", ""}, {"selected", true}, {"selecting", false}, {"recording", recording && on}});
         }
-        return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"videoSources", video}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}};
+        return {{"state", recording ? "recording" : "preview"}, {"recording", recording}, {"preview", true}, {"videoSources", video}, {"screenSelecting", selecting}, {"elapsedSeconds", 83}, {"bytes", 155000000}, {"peakDb", -18}, {"error", ""}, {"warning", warning}, {"displayWarning", displayWarning}, {"output", "/Videos/Sourceroll/take-demo"}};
     }
     double peakDb() const { return -18; }
     QVariantMap source(const QString &id) const { for (const auto &value : sources) if (value.toMap()["id"] == id) return value.toMap(); return {}; }
@@ -89,7 +89,7 @@ public:
         }
         return false;
     }
-    bool recording = false;
+    bool recording = false, selecting = false;
     QString warning, displayWarning, monitorLayout;
     QStringList chosen;
     int rescans = 0;
@@ -153,6 +153,55 @@ private:
         return file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size() && file.flush()
             && file.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
     }
+    // Stands in for FFmpeg on a camera: JPEG frames on stdout, a device timestamp when recording,
+    // and "q" to quit. A device named "broken" exits at once; one named "stubborn" ignores "q".
+    QString fakeFfmpeg(const QTemporaryDir &dir) {
+        QImage picture(64, 36, QImage::Format_RGB32); picture.fill(QColor("#e68e0d"));
+        if (!picture.save(dir.filePath("frame.jpg"), "JPEG")) return {};
+        const auto program = dir.filePath("fake-ffmpeg");
+        return script(program, QByteArray(R"(#!/usr/bin/python3
+import sys,time,threading
+args=sys.argv[1:]; recording='matroska' in args; device=args[args.index('-i')+1]
+jpeg=open(')") + dir.filePath("frame.jpg").toUtf8() + R"(','rb').read()
+if 'broken' in device: sys.exit(4)
+if recording: open(args[args.index('matroska')+1],'wb').write(b'video')
+def frames():
+    first=True
+    while True:
+        sys.stdout.buffer.write(jpeg); sys.stdout.buffer.flush()
+        if recording and first: sys.stderr.write('demuxer -> ist_index:0:0 type:video pkt_pts_time:%f\n' % time.time()); sys.stderr.flush()
+        first=False; time.sleep(.05)
+threading.Thread(target=frames,daemon=True).start()
+for line in sys.stdin:
+    if line.strip() == 'q' and 'stubborn' not in device: sys.exit(0)
+while True: time.sleep(1)
+)") ? program : QString();
+    }
+    // A recording-only stand-in for GPU Screen Recorder whose captures follow a plan by file name:
+    // "delay" seconds before the first frame, and "exitAfter" seconds until it drops out.
+    QString scriptedScreenRecorder(const QTemporaryDir &dir, const QJsonObject &plan) {
+        const auto fixture = dir.filePath("fixture.mkv"), planFile = dir.filePath("plan.json");
+        QProcess encoder;
+        encoder.start("ffmpeg", {"-v","error","-f","lavfi","-i","testsrc2=size=64x64:rate=10","-t","0.5","-c:v","libx264",fixture});
+        if (!encoder.waitForFinished(5000) || encoder.exitCode()) return {};
+        QFile planned(planFile);
+        if (!planned.open(QIODevice::WriteOnly) || planned.write(QJsonDocument(plan).toJson()) < 0) return {};
+        planned.close();
+        const auto program = dir.filePath("scripted-screen-recorder");
+        return script(program, QByteArray(R"(#!/usr/bin/python3
+import sys,time,pathlib,shutil,signal,json
+args=sys.argv[1:]; out=args[args.index('-o')+1]; name=out.split(']')[1].split('|')[0]
+plan=json.load(open(')") + planFile.toUtf8() + R"(')).get(name,{})
+signal.signal(signal.SIGINT,lambda *a: sys.exit(0))
+pathlib.Path(name+'.launched').write_text(str(time.monotonic_ns()//1000))
+time.sleep(plan.get('delay',0))
+shutil.copyfile(')" + fixture.toUtf8() + R"(',name)
+pathlib.Path(out+'.ts').write_text(str(time.monotonic_ns()//1000)+' '+str(time.time_ns()//1000))
+if 'exitAfter' in plan:
+    time.sleep(plan['exitAfter']); sys.exit(1)
+while True: time.sleep(.05)
+)") ? program : QString();
+    }
     // Stands in for GPU Screen Recorder. As a preview it writes an encoded stream to
     // stdout, after a pause and a restore token when asked for the picker. As a
     // recording it also saves a playable file and its first-frame timestamp.
@@ -176,6 +225,7 @@ if out == '/dev/stdout':
     if target == 'BROKEN': sys.exit(3)
 else:
     name=out.split(']')[1].split('|')[0]
+    if name.startswith('slow'): time.sleep(1.5)
     shutil.copyfile(')" + fixture.toUtf8() + R"(',name)
     pathlib.Path(out+'.ts').write_text(str(time.monotonic_ns()//1000)+' '+str(time.time_ns()//1000))
 while True:
@@ -480,27 +530,7 @@ while True: time.sleep(.05)
         QVERIFY(QFileInfo::exists(take + "/screen.mkv")); QVERIFY(QFileInfo::exists(take + "/screen-2.mkv"));
     }
     void cameraFeedSharesOneCaptureBetweenPreviewAndRecording() {
-        QTemporaryDir dir;
-        QImage picture(64, 36, QImage::Format_RGB32); picture.fill(QColor("#e68e0d"));
-        QVERIFY(picture.save(dir.filePath("frame.jpg"), "JPEG"));
-        // Stands in for FFmpeg: JPEG frames on stdout, a device timestamp when recording, "q" to quit.
-        const auto program = dir.filePath("fake-ffmpeg");
-        QVERIFY(script(program, QByteArray(R"(#!/usr/bin/python3
-import sys,time,threading
-args=sys.argv[1:]; recording='matroska' in args
-jpeg=open(')") + dir.filePath("frame.jpg").toUtf8() + R"(','rb').read()
-if '/dev/broken' in args: sys.exit(4)
-if recording: open(args[args.index('matroska')+1],'wb').write(b'video')
-def frames():
-    first=True
-    while True:
-        sys.stdout.buffer.write(jpeg); sys.stdout.buffer.flush()
-        if recording and first: sys.stderr.write('demuxer -> ist_index:0:0 type:video pkt_pts_time:%f\n' % time.time()); sys.stderr.flush()
-        first=False; time.sleep(.05)
-threading.Thread(target=frames,daemon=True).start()
-for line in sys.stdin:
-    if line.strip() == 'q': sys.exit(0)
-)"));
+        QTemporaryDir dir; const auto program = fakeFfmpeg(dir); QVERIFY(!program.isEmpty());
         CameraFeed feed(nullptr, program);
         QSignalSpy stamps(&feed, &CameraFeed::timestamp), ended(&feed, &CameraFeed::finished);
         QCOMPARE(feed.state(), "inactive");
@@ -522,6 +552,23 @@ for line in sys.stdin:
         feed.preview(broken);
         QTRY_COMPARE_WITH_TIMEOUT(ended.count(), 3, 5000);
         QCOMPARE(ended[2][0].toInt(), 4); QVERIFY(ended[2][1].toBool()); QVERIFY(!ended[2][3].toBool());
+    }
+    void repeatedStopRequestsKeepTheFirstDeadline() {
+        // The recorder repeats its stop request while it waits. A capture that ignores it must
+        // still be ended eight seconds after the first request, not eight seconds after the last.
+        QTemporaryDir dir; const auto program = fakeFfmpeg(dir); QVERIFY(!program.isEmpty());
+        CameraFeed feed(nullptr, program);
+        QSignalSpy ended(&feed, &CameraFeed::finished);
+        auto stubborn = camera(); stubborn["device"] = "/dev/stubborn";
+        feed.record(stubborn, dir.filePath("take.mkv"));
+        QTRY_COMPARE_WITH_TIMEOUT(feed.state(), "live", 5000);
+        QElapsedTimer clock; clock.start();
+        QTimer again; again.setInterval(100);
+        connect(&again, &QTimer::timeout, &feed, &CameraFeed::requestStop);
+        feed.requestStop(); again.start();
+        QTRY_COMPARE_WITH_TIMEOUT(ended.count(), 1, 14000);
+        QVERIFY2(clock.elapsed() > 7000 && clock.elapsed() < 10500, qPrintable(QString::number(clock.elapsed())));
+        QVERIFY(ended[0][1].toBool()); QVERIFY(ended[0][3].toBool()); QVERIFY(!feed.running());
     }
     void cameraSourcesAreCheckedOneByOne() {
         QString error; auto source = camera();
@@ -652,6 +699,120 @@ for line in sys.stdin:
         QCOMPARE(reloaded.settings()["videoSources"].toList().size(), Sources::maximum);
         QCOMPARE(sourceOf(reloaded, "screen-2")["name"].toString(), "Left monitor"); QCOMPARE(sourceOf(reloaded, "screen-2")["target"].toString(), "HDMI-A-1");
     }
+    void sourceChangesAreSavedBeforeTheyTakeEffect() {
+        QTemporaryDir dir; const auto program = fakeScreenRecorder(dir); QVERIFY(!program.isEmpty());
+        QVERIFY(QDir(dir.path()).mkdir("config"));
+        const auto path = dir.filePath("config/settings.json");
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","screen"},{"name",""},{"enabled",true},{"target","DP-3"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","screen-2"},{"kind","screen"},{"name","Left"},{"enabled",false},{"target","HDMI-A-1"},{"fps",60},{"quality","very_high"}}}}}).toJson());
+        Backend backend(path, nullptr, program);
+        QSignalSpy changes(&backend, &Backend::settingsChanged);
+        auto sourceOf = [&](const QString &id) {
+            for (const auto &value : backend.settings()["videoSources"].toList()) if (value.toMap()["id"] == id) return value.toMap();
+            return QVariantMap();
+        };
+        // A request with an option the source cannot take adds nothing at all.
+        for (const auto &options : {QJsonObject{{"name","Right"},{"quality","custom;unsafe"}}, QJsonObject{{"device","/dev/video0"}}, QJsonObject{{"colour","red"}}})
+            QVERIFY(!backend.handle({{"command","source-add"},{"kind","screen"},{"settings",options}})["ok"].toBool());
+        QVERIFY(!backend.handle({{"command","source-add"},{"kind","camera"},{"settings",QJsonObject{{"device","/dev/video9"},{"encoding","raw"}}}})["ok"].toBool());
+        QCOMPARE(backend.settings()["videoSources"].toList().size(), 2); QCOMPARE(changes.count(), 0);
+        // A valid one is saved once, with everything asked for.
+        const auto reply = backend.handle({{"command","source-add"},{"kind","screen"},{"settings",QJsonObject{{"name","Right"},{"target","DP-3"},{"fps",30},{"enabled",false}}}});
+        QVERIFY(reply["ok"].toBool()); QCOMPARE(reply["id"].toString(), "screen-3"); QCOMPARE(changes.count(), 1);
+        QCOMPARE(sourceOf("screen-3")["name"].toString(), "Right"); QCOMPARE(sourceOf("screen-3")["fps"].toInt(), 30); QVERIFY(!sourceOf("screen-3")["enabled"].toBool());
+        QVERIFY(backend.removeSource("screen-3")); changes.clear();
+
+        // With the settings folder read-only nothing can be saved, so nothing may change.
+        QVERIFY(QFile::setPermissions(dir.filePath("config"), QFile::ReadOwner | QFile::ExeOwner));
+        const auto before = backend.settings();
+        QCOMPARE(backend.addSource("screen"), QString());
+        QVERIFY(backend.status()["error"].toString().contains("Could not save settings"));
+        QVERIFY(!backend.removeSource("screen-2"));
+        QVERIFY(!backend.setSourceSetting("screen", "fps", 30));
+        // Choosing would switch "Left" on and over to the picker; neither half may stick, and no picker opens.
+        QVERIFY(!backend.chooseScreen("screen-2"));
+        QVERIFY(!backend.status()["screenSelecting"].toBool());
+        QCOMPARE(backend.settings(), before); QCOMPARE(changes.count(), 0);
+        QVERIFY(!sourceOf("screen-2")["enabled"].toBool()); QCOMPARE(sourceOf("screen-2")["target"].toString(), "HDMI-A-1");
+        QCOMPARE(backend.status()["videoSources"].toList().size(), 2);
+
+        // Once saving works again the same requests go through; choosing is a single change.
+        QVERIFY(QFile::setPermissions(dir.filePath("config"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        QVERIFY(backend.chooseScreen("screen-2"));
+        QCOMPARE(changes.count(), 1);
+        QVERIFY(sourceOf("screen-2")["enabled"].toBool()); QCOMPARE(sourceOf("screen-2")["target"].toString(), "portal");
+        QVERIFY(backend.status()["screenSelecting"].toBool());
+        // Already on and on the picker: choosing again saves nothing more.
+        QTRY_VERIFY_WITH_TIMEOUT(!backend.status()["screenSelecting"].toBool(), 5000);
+        QVERIFY(backend.chooseScreen("screen-2")); QCOMPARE(changes.count(), 1);
+        QVERIFY(backend.removeSource("screen-2")); QVERIFY(sourceOf("screen-2").isEmpty());
+        QFile saved(path); QVERIFY(saved.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(saved.readAll()).object()["videoSources"].toArray().size(), 1);
+    }
+    void aCameraThatIsNotSetUpHoldsNoDevice() {
+        QTemporaryDir dir; const auto ffmpeg = fakeFfmpeg(dir); QVERIFY(!ffmpeg.isEmpty());
+        const auto path = dir.filePath("settings.json");
+        // Both sources name the same device, but the first has no usable mode.
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","camera"},{"kind","camera"},{"name",""},{"enabled",true},{"device","/dev/video-shared"},{"mode","unset"},{"encoding","original"}},
+            QJsonObject{{"id","camera-2"},{"kind","camera"},{"name","Overhead"},{"enabled",true},{"device","/dev/video-shared"},{"mode","1920x1080@30/1:mjpeg"},{"encoding","original"}}}}}).toJson());
+        Backend backend(path, nullptr, "gpu-screen-recorder", ffmpeg);
+        auto state = [&](const QString &id) {
+            for (const auto &value : backend.status()["videoSources"].toList()) if (value.toMap()["id"] == id) return value.toMap();
+            return QVariantMap();
+        };
+        backend.setWindowVisible(true);
+        // The working camera previews; the report is about the one that is not set up.
+        QTRY_COMPARE_WITH_TIMEOUT(state("camera-2")["previewState"].toString(), "live", 8000);
+        QCOMPARE(state("camera")["previewState"].toString(), "inactive");
+        QVERIFY2(backend.status()["error"].toString().startsWith("Camera: select a supported resolution"), qPrintable(backend.status()["error"].toString()));
+        // Set up after all, it finds the device in use and says so, without disturbing the other.
+        QVERIFY(backend.setSourceSetting("camera", "mode", "1920x1080@30/1:mjpeg"));
+        QTRY_VERIFY_WITH_TIMEOUT(backend.status()["error"].toString().startsWith("Camera uses a camera that another source already records"), 3000);
+        QCOMPARE(state("camera")["previewState"].toString(), "inactive"); QCOMPARE(state("camera-2")["previewState"].toString(), "live");
+        // A take that would record one device twice is still refused outright.
+        QVERIFY(!backend.start()); QVERIFY(backend.status()["error"].toString().contains("another source already records"));
+        backend.setWindowVisible(false);
+    }
+    void aFreeCameraIsNotOneAlreadyUsedUnderAnotherPath() {
+        // Needs a real camera whose stable /dev/v4l/by-id path differs from its /dev/video node.
+        QTemporaryDir dir; const auto path = dir.filePath("settings.json");
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{}}}).toJson());
+        Backend backend(path);
+        QString listed, node;
+        for (const auto &camera : backend.cameras()) {
+            const auto id = camera.toMap()["id"].toString(), resolved = QFileInfo(id).canonicalFilePath();
+            if (!resolved.isEmpty() && resolved != id) { listed = id; node = resolved; break; }
+        }
+        if (listed.isEmpty()) QSKIP("No connected camera has a stable path that differs from its device node.");
+        // A source holds the camera by its plain device node...
+        QVERIFY(backend.handle({{"command","source-add"},{"kind","camera"},{"settings",QJsonObject{{"device",node},{"enabled",false}}}})["ok"].toBool());
+        // ...so the next source must get a different camera, or none: never the same one by its other path.
+        const auto next = backend.addSource("camera");
+        for (const auto &value : backend.settings()["videoSources"].toList())
+            if (value.toMap()["id"] == next) QVERIFY(QFileInfo(value.toMap()["device"].toString()).canonicalFilePath() != node);
+        if (next.isEmpty()) QVERIFY(backend.status()["error"].toString().contains("already has a source"));
+    }
+    void aScreenAlreadyWritingShowsAsRecordingWhileAnotherIsChosen() {
+        QTemporaryDir dir; const auto program = fakeScreenRecorder(dir); QVERIFY(!program.isEmpty());
+        const auto path = dir.filePath("settings.json");
+        write(path, QJsonDocument(QJsonObject{{"directory",dir.filePath("takes")},{"audio","none"},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","screen"},{"name",""},{"enabled",true},{"target","DP-3"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","screen-2"},{"kind","screen"},{"name","Slow"},{"enabled",true},{"target","portal"},{"fps",60},{"quality","very_high"}}}}}).toJson());
+        Backend backend(path, nullptr, program);
+        auto state = [&](const QString &id) {
+            for (const auto &value : backend.status()["videoSources"].toList()) if (value.toMap()["id"] == id) return value.toMap();
+            return QVariantMap();
+        };
+        QVERIFY(backend.start());
+        // The monitor is being saved while the take still waits for the picked screen's approval.
+        QTRY_VERIFY_WITH_TIMEOUT(backend.status()["state"].toString() == "waiting-screen" && state("screen")["recording"].toBool(), 1400);
+        QVERIFY(state("screen-2")["selecting"].toBool()); QVERIFY(!state("screen-2")["recording"].toBool());
+        QTRY_COMPARE_WITH_TIMEOUT(backend.status()["state"].toString(), "recording", 10000);
+        QVERIFY(state("screen")["recording"].toBool());
+        backend.stop(); QTRY_VERIFY_WITH_TIMEOUT(!backend.status()["recording"].toBool(), 10000);
+    }
     void twoScreensPreviewAndRecordThroughTheBackend() {
         QTemporaryDir dir; const auto program = fakeScreenRecorder(dir); QVERIFY(!program.isEmpty());
         const auto path = dir.filePath("settings.json");
@@ -705,6 +866,86 @@ for line in sys.stdin:
         QCOMPARE(state("screen-2")["previewState"].toString(), "inactive"); QCOMPARE(state("screen")["previewState"].toString(), "live");
         backend.setWindowVisible(false);
         QCOMPARE(state("screen")["previewState"].toString(), "inactive");
+    }
+    void lateTimestampDoesNotReviveAStoppingTake() {
+        QTemporaryDir dir;
+        QProcess encoder; const auto fixture = dir.filePath("fixture.mkv");
+        encoder.start("ffmpeg", {"-v","error","-f","lavfi","-i","testsrc2=size=64x64:rate=10","-t","0.5","-c:v","libx264",fixture});
+        QVERIFY(encoder.waitForFinished(5000)); QCOMPARE(encoder.exitCode(), 0);
+        SessionRecorder session;
+        connect(&session, &SessionRecorder::cameraStartRequested, this, [&](const QString &, const QString &file) { QVERIFY(QFile::copy(fixture, file)); });
+        QVERIFY(session.start({{"directory",dir.path()},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","camera"},{"kind","camera"},{"name",""},{"enabled",true}}}}}));
+        QCOMPARE(session.status()["state"].toString(), "starting");
+        session.stop();
+        QCOMPARE(session.status()["state"].toString(), "stopping");
+        // The camera's first timestamp turns up after the stop: it is kept, and the take keeps stopping.
+        session.cameraTimestamp("camera", QDateTime::currentMSecsSinceEpoch() * 1000);
+        QCOMPARE(session.status()["state"].toString(), "stopping");
+        QCOMPARE(session.status()["session"].toMap()["state"].toString(), "stopping");
+        QVERIFY(session.status()["sources"].toList().first().toMap().contains("firstMonotonicUs"));
+        session.cameraFinished("camera", 0, {});
+        QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+        QCOMPARE(session.status()["state"].toString(), "saved");
+    }
+    void replacementPortalCaptureWaitsItsTurn() {
+        // "Screen" drops out while "Slow" is still being approved. Its replacement may ask for
+        // permission again, so it must not start until the first prompt has been answered.
+        QTemporaryDir dir;
+        const auto program = scriptedScreenRecorder(dir, {{"screen.partial.mkv", QJsonObject{{"exitAfter", 0.3}}}, {"slow.partial.mkv", QJsonObject{{"delay", 3}}}});
+        QVERIFY(!program.isEmpty());
+        const auto monitor = dir.filePath("fake-pw-dump");
+        QVERIFY(script(monitor, "#!/bin/sh\nexec sleep 60\n"));
+        SessionRecorder session(nullptr, program, "ffmpeg", monitor);
+        QVERIFY(session.start({{"directory",dir.path()},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","screen"},{"name",""},{"enabled",true},{"target","portal"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","screen-2"},{"kind","screen"},{"name","Slow"},{"enabled",true},{"target","portal"},{"fps",60},{"quality","very_high"}}}}}));
+        const auto take = session.status()["output"].toString();
+        auto launched = [&](const QString &name) { QFile file(take + "/" + name + ".launched"); return file.open(QIODevice::ReadOnly) ? file.readAll().toLongLong() : 0; };
+        auto firstFrame = [&](const QString &id) {
+            for (const auto &value : session.status()["sources"].toList()) if (value.toMap()["id"] == id) return value.toMap()["firstMonotonicUs"].toLongLong();
+            return qlonglong(0);
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(session.status()["screenRecoveryAttempts"].toInt(), 1, 5000);
+        // More than the one-second pause before a retry has passed, and it is still held back.
+        QTest::qWait(1600);
+        QVERIFY(launched("slow.partial.mkv") > 0); QCOMPARE(firstFrame("slow"), 0); QCOMPARE(launched("screen-002.partial.mkv"), 0);
+        QCOMPARE(session.status()["state"].toString(), "waiting-screen");
+        QTRY_COMPARE_WITH_TIMEOUT(session.status()["state"].toString(), "recording", 10000);
+        QVERIFY(firstFrame("slow") > 0); QVERIFY(launched("screen-002.partial.mkv") >= firstFrame("slow"));
+        session.stop(); QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+        QVERIFY(QFileInfo::exists(take + "/screen-002.mkv")); QVERIFY(QFileInfo::exists(take + "/slow.mkv"));
+    }
+    void otherSourcesWaitUntilEveryScreenDelivers() {
+        // "Screen" drops out before "Slow" has its first frame. When "Slow" arrives, the camera must
+        // still wait: one screen is reconnecting, so not every screen is delivering yet.
+        QTemporaryDir dir;
+        const auto program = scriptedScreenRecorder(dir, {{"screen.partial.mkv", QJsonObject{{"exitAfter", 0.5}}}, {"slow.partial.mkv", QJsonObject{{"delay", 1}}}});
+        QVERIFY(!program.isEmpty());
+        SessionRecorder session(nullptr, program);
+        QStringList healthAtStart; bool reconnectingAtStart = true; qint64 slowFirst = 0;
+        connect(&session, &SessionRecorder::cameraStartRequested, this, [&](const QString &source, const QString &file) {
+            healthAtStart << session.status()["screenHealth"].toString(); reconnectingAtStart = session.status()["screenReconnecting"].toBool();
+            QVERIFY(QFile::copy(dir.filePath("fixture.mkv"), file)); session.cameraTimestamp(source, QDateTime::currentMSecsSinceEpoch() * 1000);
+        });
+        connect(&session, &SessionRecorder::cameraStopRequested, this, [&](const QString &source) { session.cameraFinished(source, 0, {}); });
+        QVERIFY(session.start({{"directory",dir.path()},{"microphoneEnabled",false},{"desktopEnabled",false},{"videoSources",QJsonArray{
+            QJsonObject{{"id","screen"},{"kind","screen"},{"name",""},{"enabled",true},{"target","DP-3"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","screen-2"},{"kind","screen"},{"name","Slow"},{"enabled",true},{"target","HDMI-A-1"},{"fps",60},{"quality","very_high"}},
+            QJsonObject{{"id","camera"},{"kind","camera"},{"name",""},{"enabled",true}}}}}));
+        auto firstFrame = [&](const QString &id) {
+            for (const auto &value : session.status()["sources"].toList()) if (value.toMap()["id"] == id) return value.toMap()["firstMonotonicUs"].toLongLong();
+            return qlonglong(0);
+        };
+        // "Slow" delivers while "Screen" is between captures; nothing else may have started yet.
+        QTRY_VERIFY_WITH_TIMEOUT((slowFirst = firstFrame("slow")) > 0, 5000);
+        QCOMPARE(session.status()["screenRecoveryAttempts"].toInt(), 1); QCOMPARE(firstFrame("screen-002"), 0);
+        QVERIFY(healthAtStart.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(session.status()["state"].toString(), "recording", 10000);
+        QCOMPARE(healthAtStart, QStringList{"live"}); QVERIFY(!reconnectingAtStart);
+        QVERIFY(firstFrame("screen-002") > 0); QVERIFY(firstFrame("camera") >= firstFrame("screen-002"));
+        session.stop(); QTRY_VERIFY_WITH_TIMEOUT(!session.busy(), 5000);
+        QCOMPARE(session.status()["state"].toString(), "saved");
     }
     void screenMonitorDecodesActualStreamAndDetectsStaleness() {
         QTemporaryDir dir; const auto file = dir.filePath("screen.ts");
@@ -1088,6 +1329,12 @@ for line in sys.stdin:
         // Its switch takes it out of the take and the monitor, and brings it back.
         click(item("switch-screen-2"));
         QTRY_VERIFY(!backend.source("screen-2")["enabled"].toBool()); QTRY_VERIFY(!item("monitor-screen-2")->isVisible());
+        // While another source's picker is open, a picked screen cannot be switched on, since that
+        // would leave it on without a selection. Other switches stay usable.
+        backend.selecting = true; emit backend.statusChanged();
+        QTRY_VERIFY(!item("switch-screen-2")->isEnabled()); QVERIFY(item("switch-camera")->isEnabled()); QVERIFY(item("switch-screen")->isEnabled());
+        backend.selecting = false; emit backend.statusChanged();
+        QTRY_VERIFY(item("switch-screen-2")->isEnabled());
         const int picks = backend.chosen.size();
         click(item("switch-screen-2"));
         QTRY_VERIFY(backend.source("screen-2")["enabled"].toBool()); QTRY_VERIFY(item("monitor-screen-2")->isVisible());

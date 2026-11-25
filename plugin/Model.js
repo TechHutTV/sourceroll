@@ -3,14 +3,15 @@
 // Source ids come from the recorder: lower-case letters, digits and hyphens.
 function validId(id) { return typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(id) }
 
-// The screens and cameras the recorder reports, checked field by field. An app
-// from before sources were a list reports one screen and one camera instead.
+// The screens and cameras the recorder reports, checked field by field. A recorder
+// from before sources were a list (0.5.0) reports one screen and one camera instead;
+// those are marked legacy, because that recorder only knows its earlier commands.
 function parseSources(value, screenRecording, cameraRecording) {
     if (!Array.isArray(value.videoSources)) return [
-        { id: "screen", kind: "screen", name: "", enabled: value.screenEnabled === true, picker: true,
+        { id: "screen", kind: "screen", name: "", legacy: true, enabled: value.screenEnabled === true, picker: true,
           previewState: String(value.screenPreviewState || "inactive").substring(0, 32),
           selected: value.screenSelected === true, selecting: value.screenSelecting === true, recording: screenRecording },
-        { id: "camera", kind: "camera", name: "", enabled: value.cameraEnabled !== false, picker: false,
+        { id: "camera", kind: "camera", name: "", legacy: true, enabled: value.cameraEnabled !== false, picker: false,
           previewState: String(value.cameraPreviewState || "inactive").substring(0, 32),
           selected: true, selecting: false, recording: cameraRecording }
     ]
@@ -18,14 +19,31 @@ function parseSources(value, screenRecording, cameraRecording) {
     for (const source of value.videoSources.slice(0, 16)) {
         if (!source || typeof source !== "object" || !validId(source.id)) continue
         if (source.kind !== "screen" && source.kind !== "camera") continue
+        // Text fields of the wrong type fall back to their defaults rather than being shown as converted junk.
         sources.push({
-            id: source.id, kind: source.kind, name: String(source.name || "").substring(0, 80),
+            id: source.id, kind: source.kind, legacy: false,
+            name: typeof source.name === "string" ? source.name.substring(0, 80) : "",
             enabled: source.enabled === true, picker: source.picker === true,
-            previewState: String(source.previewState || "inactive").substring(0, 32),
+            previewState: typeof source.previewState === "string" && source.previewState !== "" ? source.previewState.substring(0, 32) : "inactive",
             selected: source.selected === true, selecting: source.selecting === true, recording: source.recording === true
         })
     }
     return sources
+}
+
+// The command that opens the picker for a screen. The earlier recorder has one screen and takes no id.
+function chooseCommand(source) {
+    if (!source || !validId(source.id)) return null
+    return source.legacy ? ["sourceroll", "choose-screen", "--json"] : ["sourceroll", "choose-screen", source.id, "--json"]
+}
+
+// The command that switches a screen or camera on or off. Switching on a picked
+// screen means choosing it. The earlier recorder has one switch per kind instead of per source.
+function switchCommand(source, enabled) {
+    if (!source || !validId(source.id)) return null
+    if (enabled && source.kind === "screen" && source.picker) return chooseCommand(source)
+    if (source.legacy) return ["sourceroll", "configure", "--" + source.kind + "-enabled", enabled ? "true" : "false", "--json"]
+    return ["sourceroll", "source", "set", source.id, "--enabled", enabled ? "true" : "false", "--json"]
 }
 
 function find(sources, id) {

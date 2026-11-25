@@ -36,6 +36,12 @@ static QByteArray query(const QString &program, const QStringList &args) {
     return process.exitCode() == 0 ? process.readAllStandardOutput() : QByteArray();
 }
 
+// One camera can go by several paths, such as /dev/video0 and its /dev/v4l/by-id link.
+static QString resolvedDevice(const QString &path) {
+    const QString resolved = QFileInfo(path).canonicalFilePath();
+    return resolved.isEmpty() ? path : resolved;
+}
+
 bool Backend::omaControlOpen(const QByteArray &layers) {
     if (layers.size() > 1024 * 1024) return false;
     const auto doc = QJsonDocument::fromJson(layers);
@@ -323,8 +329,8 @@ QString Backend::defaultMode(const QString &device, bool preferFullHd) const {
 
 QString Backend::unusedCamera(const QJsonArray &sources) const {
     QStringList taken;
-    for (const auto &value : sources) if (value.toObject()["kind"] == "camera") taken << value.toObject()["device"].toString();
-    for (const auto &camera : m_cameras) if (!taken.contains(camera.toMap()["id"].toString())) return camera.toMap()["id"].toString();
+    for (const auto &value : sources) if (value.toObject()["kind"] == "camera") taken << resolvedDevice(value.toObject()["device"].toString());
+    for (const auto &camera : m_cameras) if (!taken.contains(resolvedDevice(camera.toMap()["id"].toString()))) return camera.toMap()["id"].toString();
     return {};
 }
 
@@ -338,16 +344,17 @@ bool Backend::validSettings(const QJsonObject &s, QString *error) {
     return true;
 }
 
+static QString sharedCamera(const QJsonObject &camera) {
+    return Backend::tr("%1 uses a camera that another source already records. Choose a different camera for it.").arg(Sources::label(camera));
+}
+
 bool Backend::validCamera(const QJsonArray &cameras, int index, QString *error) {
     const auto camera = cameras[index].toObject();
     if (!CameraFeed::valid(camera, error)) return false;
-    // A V4L2 device opens once, so two sources cannot share it. The same device can go by two paths.
-    auto device = [](const QJsonValue &source) {
-        const QString path = source.toObject()["device"].toString(), resolved = QFileInfo(path).canonicalFilePath();
-        return resolved.isEmpty() ? path : resolved;
-    };
+    // A V4L2 device opens once, so a take cannot record it for two sources.
+    auto device = [](const QJsonValue &source) { return resolvedDevice(source.toObject()["device"].toString()); };
     for (int i = 0; i < index; ++i) if (device(cameras[i]) == device(cameras[index])) {
-        if (error) *error = tr("%1 uses a camera that another source already records. Choose a different camera for it.").arg(Sources::label(camera));
+        if (error) *error = sharedCamera(camera);
         return false;
     }
     return true;
@@ -393,7 +400,9 @@ QVariantMap Backend::status() const {
             entry["previewState"] = feed ? feed->state() : QString("inactive"); entry["previewError"] = feed ? feed->error() : QString();
             // picker: switching this source on means asking which screen or window to share.
             entry["picker"] = portal; entry["selected"] = !portal || (feed && feed->selected()); entry["selecting"] = choosing; entry["health"] = health;
-            entry["recording"] = capturing && writing.contains(id) && !QStringList{"recovering", "failed", "starting"}.contains(health);
+            // A screen that is already writing is recording, also while the take still waits on another screen's picker.
+            entry["recording"] = (capturing || (busy && sessionState == "waiting-screen")) && writing.contains(id)
+                && !QStringList{"recovering", "failed", "starting"}.contains(health);
             if (choosing) selecting = true;
             if (firstScreen.isEmpty()) firstScreen = entry;
         } else {
@@ -426,12 +435,17 @@ QVariantMap Backend::status() const {
     return result;
 }
 
-bool Backend::saveSettings() {
+bool Backend::saveSettings() { return commitSettings(m_settings); }
+
+// Write the proposed settings. They only replace the current ones once they
+// are on disk, so a failed save leaves everything as it was and can be retried.
+bool Backend::commitSettings(const QJsonObject &proposed) {
     QDir().mkpath(QFileInfo(m_configFile).absolutePath());
     QSaveFile file(m_configFile);
-    if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(m_settings).toJson()) < 0 || !file.commit()) {
+    if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(proposed).toJson()) < 0 || !file.commit()) {
         fail(tr("Could not save settings: %1").arg(file.errorString())); return false;
     }
+    m_settings = proposed;
     return true;
 }
 
@@ -472,16 +486,13 @@ bool Backend::setKindEnabled(const QString &kind, bool enabled) {
     return !id.isEmpty() && setSourceSetting(id, "enabled", true);
 }
 
-bool Backend::setSourceSetting(const QString &id, const QString &key, const QVariant &value) {
-    if (m_shuttingDown || m_session->busy()) return false;
-    auto sources = Sources::list(m_settings);
-    int index = -1;
-    for (int i = 0; i < sources.size(); ++i) if (sources[i].toObject()["id"] == id) index = i;
-    if (index < 0) return false;
-    auto source = sources[index].toObject();
+bool Backend::setSourceSetting(const QString &id, const QString &key, const QVariant &value) { return updateSource(id, {{key, value}}); }
+
+// One option as it would be stored. False for a key or value this kind of source does not take.
+bool Backend::applyOption(const QJsonArray &sources, QJsonObject &source, const QString &key, const QVariant &value) const {
     const bool screen = source["kind"] == "screen", camera = !screen;
     const QString text = value.toString().left(4096);
-    if (key == "name") source["name"] = Sources::uniqueName(sources, Sources::cleanName(text), id);
+    if (key == "name") source["name"] = Sources::uniqueName(sources, Sources::cleanName(text), source["id"].toString());
     else if (key == "enabled") source["enabled"] = value.toBool();
     else if (screen && key == "target" && !text.isEmpty()) source["target"] = text;
     else if (screen && key == "fps") source["fps"] = qBound(15, value.toInt(), 120);
@@ -494,20 +505,36 @@ bool Backend::setSourceSetting(const QString &id, const QString &key, const QVar
     else if (camera && key == "mode") source["mode"] = text;
     else if (camera && key == "encoding" && (text == "original" || text == "h264")) source["encoding"] = text;
     else return false;
-    if (source == sources[index].toObject()) return true;
-    sources[index] = source; m_settings["videoSources"] = sources;
+    return true;
+}
+
+// Change one source: every option is accepted and saved, or nothing changes.
+bool Backend::updateSource(const QString &id, const QList<QPair<QString, QVariant>> &options) {
+    if (m_shuttingDown || m_session->busy()) return false;
+    auto sources = Sources::list(m_settings);
+    int index = -1;
+    for (int i = 0; i < sources.size(); ++i) if (sources[i].toObject()["id"] == id) index = i;
+    if (index < 0) return false;
+    const auto before = sources[index].toObject(); auto source = before;
+    for (const auto &option : options) if (!applyOption(sources, source, option.first, option.second)) return false;
+    if (source == before) return true;
+    sources[index] = source;
+    auto proposed = m_settings; proposed["videoSources"] = sources;
+    if (!commitSettings(proposed)) return false;
     // Only this source's own preview restarts; the others keep running.
-    if (camera && key != "name" && key != "encoding") { if (const auto feed = m_cameraFeeds.value(id)) feed->stop(); }
-    if (screen && ((key == "enabled" && !value.toBool()) || key == "target")) { if (const auto feed = m_screenFeeds.value(id)) feed->forget(); }
+    auto changed = [&](const char *key) { return before[key] != source[key]; };
+    if (source["kind"] == "camera" && (changed("enabled") || changed("device") || changed("mode"))) { if (const auto feed = m_cameraFeeds.value(id)) feed->stop(); }
+    if (source["kind"] == "screen" && ((changed("enabled") && !source["enabled"].toBool()) || changed("target"))) { if (const auto feed = m_screenFeeds.value(id)) feed->forget(); }
     emit settingsChanged();
-    const bool saved = saveSettings();
-    if (saved && viewed()) m_restart.start();
-    return saved;
+    if (viewed()) m_restart.start();
+    return true;
 }
 
 QString Backend::addSource(const QString &kind) { return createSource(kind, {}); }
 
-QString Backend::createSource(const QString &kind, const QString &requestedDevice) {
+// Add a source together with any options asked for. It is built and checked
+// first and saved once, so a refused option or a failed save leaves no trace.
+QString Backend::createSource(const QString &kind, const QJsonObject &options) {
     if (m_shuttingDown || m_session->busy() || (kind != "screen" && kind != "camera")) return {};
     auto sources = Sources::list(m_settings);
     if (sources.size() >= Sources::maximum) return {};
@@ -518,7 +545,8 @@ QString Backend::createSource(const QString &kind, const QString &requestedDevic
         // A camera plugged in a moment ago should be the one this source gets. With
         // none free, say so: an empty source would only sit there switched off.
         rescanCameras();
-        const QString device = requestedDevice.isEmpty() ? unusedCamera(sources) : requestedDevice;
+        const QString requested = options["device"].toString().left(4096);
+        const QString device = requested.isEmpty() ? unusedCamera(sources) : requested;
         if (device.isEmpty()) {
             fail(m_cameras.isEmpty() ? tr("No camera is connected. Connect one, then add it.")
                 : tr("Every connected camera already has a source. Connect another camera, then add it."));
@@ -526,9 +554,14 @@ QString Backend::createSource(const QString &kind, const QString &requestedDevic
         }
         source["device"] = device; source["mode"] = defaultMode(device, true); source["encoding"] = "original";
     }
-    sources.append(source); m_settings["videoSources"] = sources;
+    for (auto it = options.begin(); it != options.end(); ++it) {
+        if (kind == "camera" && it.key() == "device") continue;
+        if (!applyOption(sources, source, it.key(), it.value().toVariant())) return {};
+    }
+    sources.append(source);
+    auto proposed = m_settings; proposed["videoSources"] = sources;
+    if (!commitSettings(proposed)) return {};
     syncFeeds(); emit settingsChanged();
-    if (!saveSettings()) return {};
     if (viewed()) m_restart.start();
     return id;
 }
@@ -539,9 +572,11 @@ bool Backend::removeSource(const QString &id) {
     const auto sources = Sources::list(m_settings);
     for (const auto &value : sources) if (value.toObject()["id"] != id) kept.append(value);
     if (kept.size() == sources.size()) return false;
-    m_settings["videoSources"] = kept;
+    // On disk first: if that fails, the source keeps its preview and picker selection and can be removed again.
+    auto proposed = m_settings; proposed["videoSources"] = kept;
+    if (!commitSettings(proposed)) return false;
     syncFeeds(); emit settingsChanged(); emit statusChanged();
-    return saveSettings();
+    return true;
 }
 
 void Backend::fail(const QString &message) { m_error = message; emit statusChanged(); }
@@ -555,13 +590,24 @@ void Backend::launch() {
     // Each camera previews on its own, so one that is not set up yet does not
     // hold back the rest. What is still wrong is reported; what was fixed is cleared.
     const auto cameras = Sources::enabled(m_settings, "camera");
+    // A device is held by a camera that is previewing, or about to. One that is not
+    // set up holds nothing, so it cannot keep a working camera from its device.
+    QStringList held;
+    for (const auto &value : cameras) {
+        const auto feed = m_cameraFeeds.value(value.toObject()["id"].toString());
+        if (feed && feed->running()) held << resolvedDevice(value.toObject()["device"].toString());
+    }
     QString problem;
-    for (int i = 0; i < cameras.size(); ++i) {
-        const auto camera = cameras[i].toObject();
+    for (const auto &value : cameras) {
+        const auto camera = value.toObject();
         const auto feed = m_cameraFeeds.value(camera["id"].toString());
-        QString error;
-        if (!validCamera(cameras, i, &error)) { if (problem.isEmpty()) problem = error; continue; }
-        if (feed && !feed->running()) feed->preview(camera);
+        if (!feed || feed->running()) continue;
+        QString error; const QString device = resolvedDevice(camera["device"].toString());
+        if (!CameraFeed::valid(camera, &error) || held.contains(device)) {
+            if (problem.isEmpty()) problem = error.isEmpty() ? sharedCamera(camera) : error;
+            continue;
+        }
+        feed->preview(camera); held << device;
     }
     m_error = problem;
     emit statusChanged();
@@ -606,9 +652,9 @@ bool Backend::chooseScreen(const QString &requested) {
     if (!m_portalCache.isValid()) { feed->setError(tr("Could not create a private screen-sharing session folder.")); emit statusChanged(); return false; }
     // One picker at a time, so it is always clear which source is being chosen.
     for (auto it = m_screenFeeds.begin(); it != m_screenFeeds.end(); ++it) if (it.key() != id && it.value()->selecting()) return false;
+    // Switching the source on and over to the picker is one change: both are saved, or neither.
     const auto source = Sources::find(Sources::list(m_settings), id);
-    if (!source["enabled"].toBool()) setSourceSetting(id, "enabled", true);
-    if (source["target"] != "portal") setSourceSetting(id, "target", "portal");
+    if ((!source["enabled"].toBool() || source["target"] != "portal") && !updateSource(id, {{"enabled", true}, {"target", "portal"}})) return false;
     feed->start("portal", true); return true;
 }
 
@@ -669,9 +715,7 @@ QJsonObject Backend::handle(const QJsonObject &request) {
     else if (command == "configure") {
         for (auto it = options.begin(); it != options.end(); ++it) if (!setSetting(it.key(), it.value().toVariant())) ok = false;
     } else if (command == "source-add") {
-        // A camera can be named outright; otherwise it gets the first free one.
-        added = createSource(request["kind"].toString(), request["kind"] == "camera" ? options["device"].toString() : QString()); ok = !added.isEmpty();
-        if (ok) for (auto it = options.begin(); it != options.end(); ++it) if (!setSourceSetting(added, it.key(), it.value().toVariant())) ok = false;
+        added = createSource(request["kind"].toString(), options); ok = !added.isEmpty();
     } else if (command == "source-set") {
         ok = !options.isEmpty();
         for (auto it = options.begin(); it != options.end(); ++it) if (!setSourceSetting(request["id"].toString(), it.key(), it.value().toVariant())) ok = false;

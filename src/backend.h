@@ -91,7 +91,10 @@ private:
     void stopPreviews();
     void stopScreenPreviews();
     void startScreenPreviews();
-    QString createSource(const QString &kind, const QString &device);
+    QString createSource(const QString &kind, const QJsonObject &options);
+    bool updateSource(const QString &id, const QList<QPair<QString, QVariant>> &options);
+    bool applyOption(const QJsonArray &sources, QJsonObject &source, const QString &key, const QVariant &value) const;
+    bool commitSettings(const QJsonObject &proposed);
     bool setKindEnabled(const QString &kind, bool enabled);
     bool viewed() const { return m_visible || m_previewClients > 0; }
     static QVariantList scanCameras();

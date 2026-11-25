@@ -14,6 +14,8 @@ rename, enables `local.sourceroll`, and restarts the existing Omarchy shell.
 It does not launch another Quickshell instance.
 
 Click for monitoring, audio meters, source switches, and record/stop. The popup lists every screen and camera set up in the app, under the names given there. With more than one switched on, monitor tabs choose which to watch; the source switches choose what to save. Switching on a screen that uses the picker opens the native picker and a live preview before recording; Choose screen/window changes the selection while idle. Sources are added, named, and removed in the app.
+
+The widget and the app are installed separately, so they need not match. With Source Roll 0.5.0, which has one screen and one camera, the widget shows those two and uses that version's own commands; more than one of each needs 0.6.0 or later.
 Middle-click starts/stops a take; right-click opens the app. Escape closes the
 popup. Omarchy shell summon/hide and neighbouring panel switching are supported.
 

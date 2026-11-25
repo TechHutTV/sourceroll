@@ -293,15 +293,21 @@ bool SessionRecorder::start(const QJsonObject &settings, const QHash<QString, QS
 // should not record that wait. Each portal capture may ask for permission, so
 // those start one at a time.
 void SessionRecorder::launchScreens() {
-    bool portalStarting = false;
-    for (const auto screen : m_screens)
-        if (screen->launched && screen->target == "portal" && !screen->retries && !entry(screen->entry).contains("firstMonotonicUs")) portalStarting = true;
     for (const auto screen : m_screens) {
         if (!m_busy || m_stopping) return;
-        if (screen->launched) continue;
-        if (screen->target == "portal") { if (portalStarting) continue; portalStarting = true; }
+        if (screen->launched || (screen->target == "portal" && portalPending(screen))) continue;
         launchScreen(screen);
     }
+}
+
+// Another portal capture has been started and has not delivered a frame, so its
+// permission prompt may still be open. This holds for a first capture and for a
+// replacement after an interruption alike.
+bool SessionRecorder::portalPending(const Screen *except) const {
+    for (const auto screen : m_screens)
+        if (screen != except && screen->target == "portal" && screen->launched && !screen->recovering
+            && !entry(screen->entry).contains("firstMonotonicUs")) return true;
+    return false;
 }
 
 void SessionRecorder::launchScreen(Screen *screen) {
@@ -402,7 +408,8 @@ void SessionRecorder::cameraTimestamp(const QString &source, qint64 realUs) {
 void SessionRecorder::timestamp(const QString &id, qint64 monoUs, qint64 realUs) {
     auto s = entry(id); if (s.isEmpty() || s.contains("firstMonotonicUs")) return;
     s["firstMonotonicUs"] = double(monoUs); s["firstRealtimeUs"] = double(realUs); s["state"] = "recording"; updateEntry(id, s); save();
-    if (allStarted()) { m_state = "recording"; m_manifest["state"] = "recording"; save(); }
+    // A timestamp that arrives while the take is stopping is still kept, but must not turn it back into a recording.
+    if (!m_stopping && allStarted()) { m_state = "recording"; m_manifest["state"] = "recording"; save(); }
     emit changed();
 }
 
@@ -462,6 +469,8 @@ void SessionRecorder::pollScreen(Screen *screen) {
         if (screen->process.state() != QProcess::NotRunning) {
             if (now - screen->retryUs > 8000000) screen->process.kill();
         } else if (now - screen->retryUs > 1000000) {
+            // A replacement can ask for permission again, so it waits its turn like a first capture.
+            if (screen->target == "portal" && portalPending(screen)) return;
             screen->entry = QString("%1-%2").arg(screen->stem).arg(screen->retries + 1, 3, 10, QChar('0'));
             auto sources = m_manifest["sources"].toArray();
             sources.append(videoEntry(screen->entry, "screen", screen->source, screen->name, screen->stem));
@@ -508,15 +517,17 @@ void SessionRecorder::poll() {
     if (!m_stopping) launchScreens();
     if (!m_stopping) {
         const qint64 now = monotonicUs(), elapsed = now - m_epochMono;
-        // A screen is awaited until its first capture delivers a frame; later
-        // reconnections have their own deadline.
+        // The other sources start once every screen is delivering frames: not while one
+        // is still waiting for its first, and not while one is reconnecting. Once they
+        // have started, a later interruption no longer holds anything back.
         bool awaited = false, portalAwaited = false; QString overdue;
         for (const auto screen : m_screens) {
-            if (screen->launched && (screen->retries || entry(screen->entry).contains("firstMonotonicUs"))) continue;
+            if (screen->launched && !screen->recovering && entry(screen->entry).contains("firstMonotonicUs")) continue;
             awaited = true;
             const bool portal = screen->target == "portal";
             if (portal) portalAwaited = true;
-            if (!screen->launched) continue;
+            // These deadlines are for a first capture; a reconnection has its own.
+            if (!screen->launched || screen->retries) continue;
             if (portal && now - screen->launchUs > 120000000) overdue = tr("Screen selection timed out or was cancelled.");
             else if (!portal && now - screen->launchUs > 20000000) overdue = tr("A source did not deliver its first frame or audio packet.");
         }

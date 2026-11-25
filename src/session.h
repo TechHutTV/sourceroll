@@ -61,6 +61,7 @@ private:
     void clearScreens();
     void launchSources();
     void launchScreens();
+    bool portalPending(const Screen *except) const;
     void launchScreen(Screen *screen);
     void pollScreen(Screen *screen);
     void screenFailure(Screen *screen, const QString &reason);

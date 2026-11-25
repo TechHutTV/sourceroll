@@ -254,6 +254,8 @@ ApplicationWindow {
                             required property int index
                             readonly property var source: win.videoSources[index] || ({})
                             objectName: "switch-" + source.id
+                            // Switching on a picked screen opens its picker, and only one can be open.
+                            enabled: !win.busy && !(win.state.screenSelecting && !source.enabled && source.kind === "screen" && source.target === "portal")
                             text: win.sourceLabel(source); checked: !!source.enabled
                             onClicked: {
                                 backend.setSourceSetting(source.id, "enabled", checked)
