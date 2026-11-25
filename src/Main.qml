@@ -43,7 +43,7 @@ ApplicationWindow {
         if (state.state === "waiting-screen") return qsTr("Choose a screen or window…")
         if (state.state === "validating") return qsTr("Checking saved files…")
         if (state.state === "saved") return state.session && state.session.hasScreenGaps ? qsTr("Saved with screen interruptions") : qsTr("Session saved")
-        if (state.screenHealth === "recovering" || (state.screenRecoveryAttempts > 0 && state.screenHealth === "starting")) return qsTr("Reconnecting screen…")
+        if ((state.state === "recording" || state.state === "starting") && (state.screenHealth === "recovering" || (state.screenRecoveryAttempts > 0 && state.screenHealth === "starting"))) return qsTr("Reconnecting screen…")
         if (state.state === "starting") return qsTr("Starting…")
         if (state.state === "recording") return qsTr("Recording")
         if (state.state === "stopping") return qsTr("Saving…")

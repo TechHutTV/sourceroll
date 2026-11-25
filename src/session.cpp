@@ -97,7 +97,7 @@ SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, 
     connect(&m_captureHealth, &CaptureHealth::unavailable, this, [this] {
         if (!m_busy || m_stopping || m_screenRecovering) return;
         m_screenHealth = "unavailable";
-        m_warning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording.");
+        m_monitorWarning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording.");
         save(); emit changed();
     });
     connect(&m_screen, &QProcess::readyReadStandardOutput, this, [this] {
@@ -136,6 +136,12 @@ SessionRecorder::SessionRecorder(QObject *parent, const QString &screenProgram, 
 
 SessionRecorder::~SessionRecorder() { shutdown(); }
 
+QString SessionRecorder::warning() const {
+    QStringList parts;
+    for (const auto &part : {m_interruptionWarning, m_monitorWarning, m_timingWarning, m_warning}) if (!part.isEmpty()) parts << part;
+    return parts.join(' ');
+}
+
 QJsonObject SessionRecorder::source(const QString &id) const {
     for (const auto &v : m_manifest["sources"].toArray()) if (v.toObject()["id"] == (id == "screen" ? m_screenId : id)) return v.toObject();
     return {};
@@ -160,7 +166,7 @@ QVariantMap SessionRecorder::status() const {
         if (stamp && (!first || stamp < first)) first = stamp;
     }
     const auto end = m_busy ? monotonicUs() : qint64(m_manifest["stoppedMonotonicUs"].toDouble(first));
-    return {{"state", m_state}, {"recording", m_busy}, {"error", m_error}, {"warning", m_warning},
+    return {{"state", m_state}, {"recording", m_busy}, {"error", m_error}, {"warning", warning()},
         {"output", m_directory}, {"elapsedSeconds", first ? qMax(0.0, (end - first) / 1000000.0) : 0},
         {"screenHealth", m_screenHealth}, {"screenRecoveryAttempts", m_screenRetries}, {"bytes", double(size)}, {"sources", m_manifest["sources"].toArray().toVariantList()}, {"session", m_manifest.toVariantMap()}};
 }
@@ -198,7 +204,7 @@ bool SessionRecorder::start(const QJsonObject &settings, const QString &portalTo
     }
     m_captureHealth.stop(); m_screenId = "screen"; m_screenRecovering = false; m_screenRetries = 0;
     m_screenHealth = selected(settings, "screen") ? "starting" : "inactive"; m_portalTokenPath = portalTokenPath;
-    stopPreview(); m_settings = settings; m_error.clear(); m_warning.clear(); m_stopping = false; m_sourcesLaunched = false;
+    stopPreview(); m_settings = settings; m_error.clear(); m_warning.clear(); m_monitorWarning.clear(); m_interruptionWarning.clear(); m_timingWarning.clear(); m_stopping = false; m_sourcesLaunched = false;
     m_epochMono = monotonicUs(); m_epochReal = QDateTime::currentMSecsSinceEpoch() * 1000;
     m_started = m_epochMono;
     const QString name = "take-" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
@@ -254,7 +260,7 @@ void SessionRecorder::screenFailure(const QString &reason) {
         stop(tr("Screen capture could not recover at %1 after three retries. Existing files have been kept. %2").arg(timecode, reason)); return;
     }
     ++m_screenRetries; m_screenRecovering = true; m_screenHealth = "recovering";
-    m_warning = tr("Screen capture interrupted at %1. Reconnecting (attempt %2 of 3); camera and audio continue. There will be a gap in the screen track.").arg(timecode).arg(m_screenRetries);
+    m_interruptionWarning = tr("Screen capture interrupted at %1. Reconnecting (attempt %2 of 3); camera and audio continue. There will be a gap in the screen track.").arg(timecode).arg(m_screenRetries);
     m_retryUs = monotonicUs();
     if (m_screen.processId() > 0) ::kill(m_screen.processId(), SIGINT);
     save(); emit changed();
@@ -369,7 +375,7 @@ void SessionRecorder::poll() {
                 if (m_screenRetries) {
                     auto events = m_manifest["screenInterruptions"].toArray();
                     auto event = events.last().toObject();
-                    m_warning = tr("Screen capture resumed. Check the interruption at %1 before editing.").arg(event["recordingTimecode"].toString());
+                    m_interruptionWarning = tr("Screen capture resumed. Check the interruption at %1 before editing.").arg(event["recordingTimecode"].toString());
                     event["resumedMonotonicUs"] = double(mono); events.last() = event;
                     m_manifest["screenInterruptions"] = events; save();
                 }
@@ -385,7 +391,7 @@ void SessionRecorder::poll() {
             if (m_settings["screenTarget"] != "portal" || m_captureHealth.linked()) m_screenHealth = "live";
             else if (now - m_screenLaunchUs > 10000000 && m_screenHealth != "unavailable") {
                 m_screenHealth = "unavailable";
-                m_warning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording."); save();
+                m_monitorWarning = tr("Screen connection monitoring is unavailable. Check the screen preview while recording."); save();
             }
             // The muxer can buffer small CFR frames for a still desktop. Only
             // treat silence on BOTH outputs as a stall; a dropped preview
@@ -403,7 +409,7 @@ void SessionRecorder::poll() {
         else if (m_state == "starting" && ((m_sourcesLaunched && monotonicUs() - m_sourcesStarted > 20000000) || (!m_sourcesLaunched && elapsed > 20000000))) stop(tr("A source did not deliver its first frame or audio packet."));
         if (QStorageInfo(m_directory).bytesAvailable() < 256LL * 1024 * 1024) stop(tr("Low disk space. The session was stopped to protect its files."));
         const auto drift = (QDateTime::currentMSecsSinceEpoch() * 1000 - m_epochReal) - elapsed;
-        if (qAbs(drift) > 250000) m_warning = tr("The system clock changed during capture. Check alignment before editing.");
+        if (qAbs(drift) > 250000) m_timingWarning = tr("The system clock changed during capture. Check alignment before editing.");
     }
     if (m_stopping && workersRunning()) {
         if (m_stopClock.elapsed() > 8000) {
@@ -420,7 +426,8 @@ void SessionRecorder::poll() {
 
 void SessionRecorder::save() {
     if (m_directory.isEmpty()) return;
-    m_manifest["error"] = m_error; m_manifest["warning"] = m_warning;
+    m_manifest["error"] = m_error; m_manifest["warning"] = warning();
+    m_manifest["warnings"] = QJsonObject{{"interruption", m_interruptionWarning}, {"monitoring", m_monitorWarning}, {"timing", m_timingWarning}, {"other", m_warning}};
     QSaveFile file(QDir(m_directory).filePath("session.json"));
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(m_manifest).toJson()) < 0 || !file.commit()) {
         if (m_error.isEmpty()) m_error = tr("Could not save session metadata. Check disk space and permissions.");
@@ -509,18 +516,20 @@ void SessionRecorder::complete() {
             const auto event = value.toObject();
             times << (event.contains("recordingTimecode") ? event["recordingTimecode"].toString() : tr("unknown time"));
         }
-        m_warning = tr("Saved with screen interruptions at %1. Check these points and the timeline gaps before editing.").arg(times.join(", "));
+        m_interruptionWarning = tr("Saved with screen interruptions at %1. Check these points and the timeline gaps before editing.").arg(times.join(", "));
     }
-    qint64 first = 0;
+    qint64 first = 0; bool timingMissing = false;
     auto sources = m_manifest["sources"].toArray();
     for (const auto &v : sources) { const auto t = qint64(v.toObject()["firstMonotonicUs"].toDouble()); if (t && (!first || t < first)) first = t; }
     for (int i = 0; i < sources.size(); ++i) {
         auto s = sources[i].toObject();
         if (s.contains("firstMonotonicUs")) s["startOffsetSeconds"] = (s["firstMonotonicUs"].toDouble() - first) / 1000000;
-        else { s["timingUnknown"] = true; m_warning = tr("Some timing information is missing. Align those files manually."); }
+        else { s["timingUnknown"] = true; timingMissing = true; }
         sources[i] = s;
     }
     m_manifest["sources"] = sources;
+    const QString missing = tr("Some timing information is missing. Align those files manually.");
+    if (timingMissing && !m_timingWarning.contains(missing)) m_timingWarning = QStringList{m_timingWarning, missing}.join(' ').trimmed();
     const auto edit = timeline(m_manifest, m_directory);
     if (!edit.isEmpty()) {
         QSaveFile file(QDir(m_directory).filePath("timeline.otio"));
@@ -544,7 +553,10 @@ bool SessionRecorder::recover(const QString &root) {
         bool safe = true;
         for (const auto &v : manifest["sources"].toArray()) { const auto name = v.toObject()["file"].toString(); if (name.isEmpty() || name != QFileInfo(name).fileName()) safe = false; }
         if (!safe) continue;
-        stopPreview(); m_manifest = manifest; m_directory = directory.filePath(name); m_started = 0; m_error.clear(); m_warning = manifest["warning"].toString();
+        stopPreview(); m_manifest = manifest; m_directory = directory.filePath(name); m_started = 0; m_error.clear();
+        const auto parts = manifest["warnings"].toObject();
+        m_interruptionWarning = parts["interruption"].toString(); m_monitorWarning = parts["monitoring"].toString(); m_timingWarning = parts["timing"].toString();
+        m_warning = manifest.contains("warnings") ? parts["other"].toString() : manifest["warning"].toString();
         m_busy = true; m_stopping = false; m_state = "validating"; m_validationIndex = 0; save(); validateNext(); emit changed(); return true;
     }
     m_warning = tr("No interrupted session was found in this folder."); emit changed(); return false;

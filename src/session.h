@@ -56,6 +56,7 @@ private:
     QJsonObject source(const QString &id) const;
     void updateSource(const QString &id, const QJsonObject &value);
     bool workersRunning() const;
+    QString warning() const;
     QString m_screenProgram, m_audioProgram;
     CaptureHealth m_captureHealth;
     QString m_screenId = "screen", m_portalTokenPath, m_screenHealth = "inactive";
@@ -66,6 +67,8 @@ private:
     QByteArray m_audioLines[2], m_audioLog[2], m_screenLog;
     QJsonObject m_settings, m_manifest;
     QString m_directory, m_state = "idle", m_error, m_warning;
+    // Warnings are kept per topic so one cannot erase another; warning() joins them for display.
+    QString m_interruptionWarning, m_monitorWarning, m_timingWarning;
     QTimer m_poll, m_meter;
     QElapsedTimer m_stopClock;
     double m_pending[2] = {-90, -90}, m_peak[2] = {-90, -90};
