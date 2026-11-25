@@ -28,6 +28,12 @@ jobs:
   draft:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One at a time and in order, so a run for an older push cannot finish last
+    # and leave its version on the draft. The event is in the name so that the
+    # skipped copies of this job on pull requests never queue with the real ones.
+    concurrency:
+      group: draft-release-${{ github.event_name }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: read
@@ -49,8 +55,9 @@ jobs:
             exit 0
           fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          # The first release has no earlier one to compare with, so its notes start at the first commit.
-          if [ -z "$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[].tagName')" ]; then
+          # Release Drafter compares with the last full release. Until there is one,
+          # pre-releases aside, the notes start at the first commit.
+          if [ -z "$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[].tagName')" ]; then
             echo "from=$(git rev-list --max-parents=0 HEAD | tail -n 1)" >> "$GITHUB_OUTPUT"
           fi
 

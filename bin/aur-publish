@@ -10,7 +10,7 @@ remote="${AUR_REMOTE:-ssh://aur@aur.archlinux.org/sourceroll.git}"
 if [ ! -f "$from/PKGBUILD" ] || [ ! -f "$from/.SRCINFO" ]; then
   echo "aur-publish: $from has no PKGBUILD and .SRCINFO. Run bin/aur-package first." >&2; exit 1
 fi
-field() { sed -n "s/^[[:space:]]*$1 = //p" "$from/.SRCINFO" | head -n 1; }
+field() { sed -n "s/^[[:space:]]*$1 = //p" "${2:-$from/.SRCINFO}" | head -n 1; }
 release="$(field pkgver)-$(field pkgrel)"
 source=$(field source); url=${source#*::}
 expected=$(field sha256sums)
@@ -27,6 +27,14 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 git clone --quiet "$remote" "$work/aur"
+# Running an earlier release again must not put its recipe over a newer one.
+if [ -f "$work/aur/.SRCINFO" ]; then
+  published="$(field pkgver "$work/aur/.SRCINFO")-$(field pkgrel "$work/aur/.SRCINFO")"
+  if [ "$(printf '%s\n' "$published" "$release" | sort -V | tail -n 1)" != "$release" ]; then
+    echo "aur-publish: the AUR has sourceroll $published, which is newer than $release. Nothing was pushed." >&2
+    exit 1
+  fi
+fi
 cp "$from/PKGBUILD" "$from/.SRCINFO" "$work/aur/"
 cd "$work/aur"
 git add PKGBUILD .SRCINFO

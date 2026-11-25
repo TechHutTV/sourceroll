@@ -47,7 +47,7 @@ def enabling(calls):
 
 def placed(home):
     layout = json.loads((home / '.config/omarchy/shell.json').read_text())['bar']['layout']
-    return {section: [entry['id'] for entry in entries] for section, entries in layout.items()}
+    return {section: [entry['id'] if isinstance(entry, dict) else entry for entry in entries] for section, entries in layout.items()}
 
 
 with tempfile.TemporaryDirectory() as scratch:
@@ -73,6 +73,16 @@ with tempfile.TemporaryDirectory() as scratch:
     assert done.returncode == 0, done.stderr
     assert enabling(calls) == ['omarchy', 'plugin', 'enable', 'local.sourceroll'], calls
     assert placed(home) == {'left': ['local.sourceroll', 'omarchy.menu']}
+
+    # The shell also takes a bare ID as an entry. Those count as placed, and are renamed, the same way.
+    done, calls, home = install(scratch, {'left': ['local.sourceroll', {'id': 'omarchy.menu'}]})
+    assert done.returncode == 0, done.stderr
+    assert enabling(calls) == ['omarchy', 'plugin', 'enable', 'local.sourceroll'], calls
+    assert placed(home) == {'left': ['local.sourceroll', 'omarchy.menu']}
+    done, calls, home = install(scratch, {'right': ['omarchy.tray', 'local.multitake']})
+    assert done.returncode == 0, done.stderr
+    assert enabling(calls) == ['omarchy', 'plugin', 'enable', 'local.sourceroll'], calls
+    assert placed(home) == {'right': ['omarchy.tray', 'local.sourceroll']}
 
     # The package installs the script under /usr/share with a command linked to it;
     # run that way, it takes the widget files installed beside it.

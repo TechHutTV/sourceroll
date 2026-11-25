@@ -49,11 +49,16 @@ if config.exists():
     shutil.copy2(config, backup / 'shell.json')
     layout = data.get('bar', {}).get('layout', {})
     for section, entries in layout.items():
-        for entry in entries:
-            if not isinstance(entry, dict): continue
-            if entry.get('id') == 'local.multitake': entry['id'] = 'local.sourceroll'
+        if not isinstance(entries, list): continue
+        for index, entry in enumerate(entries):
+            # The shell takes an entry as a table with the ID in it, or as the bare ID.
+            name = entry.get('id') if isinstance(entry, dict) else entry
+            if name == 'local.multitake':
+                name = 'local.sourceroll'
+                if isinstance(entry, dict): entry['id'] = name
+                else: entries[index] = name
             # A widget that is on the bar already stays where it was put.
-            if entry.get('id') == 'local.sourceroll': placed = True
+            if name == 'local.sourceroll': placed = True
     plugins = data.get('plugins', [])
     if isinstance(plugins, list):
         for index, entry in enumerate(plugins):

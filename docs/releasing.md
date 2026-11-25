@@ -35,7 +35,7 @@ The first push creates the `sourceroll` package on the AUR, owned by that accoun
 1. Raise the version in a pull request. It is written in four places: `src/main.cpp`, `plugin/manifest.json`, `pkgbuild/PKGBUILD`, and `aur/PKGBUILD`. Set `pkgrel` in `aur/PKGBUILD` back to 1. `bin/check-release` prints the version and fails when the copies disagree; the workflows run it too.
 2. Merge it and wait for the *Draft release* run to finish, so the draft carries the new version.
 3. Open the draft on the [releases page](https://github.com/TechHutTV/sourceroll/releases), edit the notes if you like, and publish it.
-4. Watch the *Release* run. When it is green, `yay -S sourceroll` installs the new version.
+4. Watch the *Release* run. Once its *Publish to the AUR* step reports that the package was published, `yay -S sourceroll` installs the new version. A green run alone does not say so: without the secret, or for a pre-release, that step ends with a notice that the AUR was not updated, and the run still passes.
 
 After a release, merges do not start a new draft until the version is raised. Nothing is lost: the next draft lists everything merged since the last published release.
 
